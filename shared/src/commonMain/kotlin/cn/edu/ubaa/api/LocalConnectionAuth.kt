@@ -226,6 +226,10 @@ internal object LocalUpstreamClientProvider {
             ),
     )
   }
+  internal var isolatedClientFactory: (Boolean, CookiesStorage) -> HttpClient =
+      { followRedirects, cookieStorage ->
+        buildLocalUpstreamClient(followRedirects = followRedirects, cookieStorage = cookieStorage)
+      }
 
   private val sharedClient =
       ResettableSharedInstance(factory = { clientFactory(true) }, disposer = HttpClient::close)
@@ -233,6 +237,11 @@ internal object LocalUpstreamClientProvider {
   fun shared(): HttpClient = sharedClient.getOrCreate()
 
   fun newNoRedirectClient(): HttpClient = clientFactory(false)
+
+  fun newClient(
+      cookieStorage: CookiesStorage,
+      followRedirects: Boolean = true,
+  ): HttpClient = isolatedClientFactory(followRedirects, cookieStorage)
 
   fun reset() {
     sharedClient.reset()
@@ -245,6 +254,9 @@ internal object LocalUpstreamClientProvider {
                       ?: ConnectionMode.DIRECT
               ),
       )
+    }
+    isolatedClientFactory = { followRedirects, cookieStorage ->
+      buildLocalUpstreamClient(followRedirects = followRedirects, cookieStorage = cookieStorage)
     }
   }
 }

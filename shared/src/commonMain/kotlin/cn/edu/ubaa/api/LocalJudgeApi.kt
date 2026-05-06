@@ -5,13 +5,26 @@ import cn.edu.ubaa.model.dto.JudgeAssignmentSummaryDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentsResponse
 import cn.edu.ubaa.model.dto.JudgeProblemDto
 import cn.edu.ubaa.model.dto.JudgeSubmissionStatus
+import io.ktor.client.HttpClient
+import io.ktor.client.plugins.cookies.CookiesStorage
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.Cookie
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.Url
+import io.ktor.util.date.GMTDate
+import kotlin.time.Clock
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 
 internal class LocalJudgeApiBackend : JudgeApiBackend {
   override suspend fun getAssignments(): Result<JudgeAssignmentsResponse> =
@@ -24,19 +37,15 @@ internal class LocalJudgeApiBackend : JudgeApiBackend {
       runLocalJudgeCall("希冀作业详情加载失败，请稍后重试") { getAssignmentDetailResponse(courseId, assignmentId) }
 
   private suspend fun LocalJudgeClient.getAssignmentsResponse(): JudgeAssignmentsResponse {
+    val courses = getCourses()
     val assignments =
-        getCourses()
-            .flatMap { course ->
-              getAssignments(course).map { assignment ->
-                getAssignmentDetail(
-                        courseId = assignment.courseId,
-                        courseName = assignment.courseName,
-                        assignmentId = assignment.assignmentId,
-                        title = assignment.title,
-                    )
-                    .toSummary()
+        courses
+            .mapConcurrently(LOCAL_JUDGE_ASSIGNMENT_QUERY_CONCURRENCY) { course ->
+              withIsolatedClient { worker ->
+                worker.getAssignments(course).map { assignment -> assignment.toSummary() }
               }
             }
+            .flatten()
             .sortedWith(
                 compareBy<JudgeAssignmentSummaryDto> { it.dueTime ?: "9999-99-99 99:99:99" }
                     .thenBy { it.courseName }
@@ -50,19 +59,22 @@ internal class LocalJudgeApiBackend : JudgeApiBackend {
       courseId: String,
       assignmentId: String,
   ): JudgeAssignmentDetailDto {
-    val course = getCourses().firstOrNull { it.courseId == courseId }
-    val courseName = course?.courseName.orEmpty()
-    val assignment =
-        course?.let {
-          getAssignments(it).firstOrNull { assignment -> assignment.assignmentId == assignmentId }
-        }
+    val course =
+        getCourses().firstOrNull { it.courseId == courseId } ?: throw localJudgeNotFoundException()
 
-    return getAssignmentDetail(
-        courseId = courseId,
-        courseName = assignment?.courseName ?: courseName,
-        assignmentId = assignmentId,
-        title = assignment?.title ?: assignmentId,
-    )
+    return withIsolatedClient { worker ->
+      val assignment =
+          worker.getAssignments(course).firstOrNull { assignment ->
+            assignment.assignmentId == assignmentId
+          } ?: throw localJudgeNotFoundException()
+
+      worker.getAssignmentDetail(
+          courseId = assignment.courseId,
+          courseName = assignment.courseName,
+          assignmentId = assignment.assignmentId,
+          title = assignment.title,
+      )
+    }
   }
 
   private suspend fun <T> runLocalJudgeCall(
@@ -83,7 +95,11 @@ internal class LocalJudgeApiBackend : JudgeApiBackend {
   }
 }
 
-private class LocalJudgeClient {
+private class LocalJudgeClient(
+    private val httpClient: HttpClient = LocalUpstreamClientProvider.shared(),
+    private val ownsHttpClient: Boolean = false,
+) {
+  private val courseSelectionMutex = Mutex()
   private var judgeSessionActivated = false
 
   suspend fun getCourses(): List<LocalJudgeCourseRaw> {
@@ -94,9 +110,11 @@ private class LocalJudgeClient {
 
   suspend fun getAssignments(course: LocalJudgeCourseRaw): List<LocalJudgeAssignmentRaw> {
     ensureJudgeSession()
-    selectCourse(course.courseId)
-    val body = getHtml("get_assignments", "$BASE_URL/assignment/index.jsp")
-    return LocalJudgeHtmlParsers.parseAssignments(body, course)
+    return courseSelectionMutex.withLock {
+      selectCourse(course.courseId)
+      val body = getHtml("get_assignments", "$BASE_URL/assignment/index.jsp")
+      LocalJudgeHtmlParsers.parseAssignments(body, course)
+    }
   }
 
   suspend fun getAssignmentDetail(
@@ -106,30 +124,30 @@ private class LocalJudgeClient {
       title: String,
   ): JudgeAssignmentDetailDto {
     ensureJudgeSession()
-    selectCourse(courseId)
-    val body =
-        getHtml("get_assignment_detail", "$BASE_URL/assignment/index.jsp?assignID=$assignmentId")
-    return LocalJudgeHtmlParsers.parseAssignmentDetail(
-        html = body,
-        courseId = courseId,
-        courseName = courseName,
-        assignmentId = assignmentId,
-        title = title,
-    )
+    return courseSelectionMutex.withLock {
+      selectCourse(courseId)
+      val body =
+          getHtml("get_assignment_detail", "$BASE_URL/assignment/index.jsp?assignID=$assignmentId")
+      LocalJudgeHtmlParsers.parseAssignmentDetail(
+          html = body,
+          courseId = courseId,
+          courseName = courseName,
+          assignmentId = assignmentId,
+          title = title,
+      )
+    }
   }
 
   private suspend fun ensureJudgeSession(forceRefresh: Boolean = false) {
     if (!forceRefresh && judgeSessionActivated) return
-    val response =
-        LocalUpstreamClientProvider.shared().get(judgeServiceLoginUrl()) {
-          applyJudgeBrowserHeaders()
-        }
-    val body = response.bodyAsText()
-    if (isLocalJudgeSessionExpired(response, body)) {
+    val response = httpClient.get(judgeServiceLoginUrl()) { applyJudgeBrowserHeaders() }
+    val activatedResponse = followJudgeActivationRedirectIfNeeded(response)
+    val body = activatedResponse.bodyAsText()
+    if (isLocalJudgeSessionExpired(activatedResponse, body)) {
       throw LocalJudgeAuthenticationException("希冀登录状态异常，请重新登录后重试")
     }
-    if (response.status != HttpStatusCode.OK) {
-      throw ApiCallException("希冀服务暂时不可用，请稍后重试", response.status, "judge_error")
+    if (activatedResponse.status != HttpStatusCode.OK) {
+      throw ApiCallException("希冀服务暂时不可用，请稍后重试", activatedResponse.status, "judge_error")
     }
     judgeSessionActivated = true
   }
@@ -143,10 +161,7 @@ private class LocalJudgeClient {
       url: String,
       retry: Int = DEFAULT_RETRY_COUNT,
   ): String {
-    val response =
-        LocalUpstreamClientProvider.shared().get(localUpstreamUrl(url)) {
-          applyJudgeBrowserHeaders()
-        }
+    val response = httpClient.get(localUpstreamUrl(url)) { applyJudgeBrowserHeaders() }
     val body = response.bodyAsText()
     if (isLocalJudgeSessionExpired(response, body)) {
       if (retry > 0) {
@@ -162,9 +177,125 @@ private class LocalJudgeClient {
     return body
   }
 
+  suspend fun <T> withIsolatedClient(block: suspend (LocalJudgeClient) -> T): T {
+    val mode =
+        ConnectionRuntime.currentMode()?.takeIf { it != ConnectionMode.SERVER_RELAY }
+            ?: ConnectionMode.DIRECT
+    val cookieStorage = ForkedLocalJudgeCookieStorage(LocalCookieStore.storage(mode))
+    val client = LocalUpstreamClientProvider.newClient(cookieStorage)
+    val worker = LocalJudgeClient(httpClient = client, ownsHttpClient = true)
+    return try {
+      block(worker)
+    } finally {
+      worker.close()
+    }
+  }
+
+  private suspend fun followJudgeActivationRedirectIfNeeded(response: HttpResponse): HttpResponse {
+    if (response.status.value !in 300..399) return response
+    val location =
+        response.headers[HttpHeaders.Location]?.takeIf { it.isNotBlank() } ?: return response
+    val redirectUrl = resolveJudgeRedirectUrl(response.call.request.url.toString(), location)
+    return httpClient.get(localUpstreamUrl(redirectUrl)) { applyJudgeBrowserHeaders() }
+  }
+
+  private fun close() {
+    if (ownsHttpClient) {
+      httpClient.close()
+    }
+  }
+
   companion object {
     private const val BASE_URL = "https://judge.buaa.edu.cn"
     private const val DEFAULT_RETRY_COUNT = 3
+  }
+}
+
+private class ForkedLocalJudgeCookieStorage(private val parent: CookiesStorage) : CookiesStorage {
+  private val mutex = Mutex()
+  private val cookies = linkedMapOf<String, StoredCookie>()
+
+  override suspend fun addCookie(requestUrl: Url, cookie: Cookie) {
+    mutex.withLock { putCookie(requestUrl, cookie) }
+  }
+
+  override suspend fun get(requestUrl: Url): List<Cookie> {
+    val parentCookies = parent.get(requestUrl).filterNot { isJudgeScopedCookie(requestUrl, it) }
+    val now = localJudgeNowMillis()
+    return mutex.withLock {
+      parentCookies.forEach { putCookie(requestUrl, it) }
+      val result = mutableListOf<Cookie>()
+      val expiredKeys = mutableListOf<String>()
+      cookies.forEach { (key, stored) ->
+        val cookie = stored.cookie
+        val expiresAt = cookie.expires?.timestamp
+        val maxAge = cookie.maxAge ?: -1
+        if (
+            (expiresAt != null && expiresAt <= now) ||
+                (maxAge >= 0 && now >= stored.createdAt + maxAge * 1000L)
+        ) {
+          expiredKeys += key
+          return@forEach
+        }
+        if (!domainMatches(requestUrl.host, cookie.domain ?: requestUrl.host)) return@forEach
+        if (!pathMatches(requestUrl.encodedPath, cookie.path ?: "/")) return@forEach
+        if (cookie.secure && !requestUrl.protocol.name.equals("https", ignoreCase = true)) {
+          return@forEach
+        }
+        result += cookie.copy(expires = expiresAt?.let { GMTDate(it) })
+      }
+      expiredKeys.forEach(cookies::remove)
+      result
+    }
+  }
+
+  override fun close() {
+    cookies.clear()
+  }
+
+  private fun putCookie(requestUrl: Url, cookie: Cookie) {
+    val normalized =
+        cookie.copy(
+            domain = (cookie.domain ?: requestUrl.host).lowercase(),
+            path = cookie.path ?: requestUrl.encodedPath.ifBlank { "/" },
+        )
+    val key = cookieKey(normalized)
+    if ((normalized.maxAge ?: -1) == 0) {
+      cookies.remove(key)
+      return
+    }
+    cookies[key] = StoredCookie(normalized, localJudgeNowMillis())
+  }
+
+  private data class StoredCookie(val cookie: Cookie, val createdAt: Long)
+
+  private fun cookieKey(cookie: Cookie): String =
+      "${cookie.domain.orEmpty()}|${cookie.path.orEmpty()}|${cookie.name}"
+
+  private fun isJudgeScopedCookie(requestUrl: Url, cookie: Cookie): Boolean {
+    val domain = (cookie.domain ?: requestUrl.host).trimStart('.').lowercase()
+    if (domain == "judge.buaa.edu.cn" || domain.endsWith(".judge.buaa.edu.cn")) return true
+    if (domain == "d.buaa.edu.cn") {
+      return webVpnPathTargetsJudge(cookie.path.orEmpty())
+    }
+    return false
+  }
+
+  private fun webVpnPathTargetsJudge(path: String): Boolean {
+    val resolved = LocalWebVpnSupport.fromWebVpnUrl("https://d.buaa.edu.cn$path")
+    return resolved.contains("judge.buaa.edu.cn", ignoreCase = true)
+  }
+
+  private fun domainMatches(host: String, domain: String): Boolean {
+    val cleanHost = host.lowercase()
+    val cleanDomain = domain.trimStart('.').lowercase()
+    return cleanHost == cleanDomain || cleanHost.endsWith(".$cleanDomain")
+  }
+
+  private fun pathMatches(requestPath: String, cookiePath: String): Boolean {
+    val normalizedRequestPath = requestPath.ifBlank { "/" }
+    val normalizedCookiePath = if (cookiePath.endsWith("/")) cookiePath else "$cookiePath/"
+    return normalizedRequestPath.startsWith(normalizedCookiePath.removeSuffix("/"))
   }
 }
 
@@ -184,6 +315,18 @@ private const val JUDGE_ACCEPT_HEADER =
 
 private const val JUDGE_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+
+private fun resolveJudgeRedirectUrl(baseUrl: String, location: String): String {
+  if (location.startsWith("http://") || location.startsWith("https://")) return location
+  val currentUrl = runCatching { Url(baseUrl) }.getOrNull() ?: return location
+  if (location.startsWith("//")) return "${currentUrl.protocol.name}:$location"
+  val authority =
+      "${currentUrl.protocol.name}://${currentUrl.host}${if (currentUrl.specifiedPort != currentUrl.protocol.defaultPort) ":${currentUrl.specifiedPort}" else ""}"
+  if (location.startsWith("/")) return "$authority$location"
+  val basePath = currentUrl.encodedPath.substringBeforeLast('/', "")
+  val separator = if (basePath.endsWith("/")) "" else "/"
+  return "$authority$basePath$separator$location"
+}
 
 private class LocalJudgeAuthenticationException(message: String) : RuntimeException(message)
 
@@ -545,6 +688,35 @@ private fun JudgeAssignmentDetailDto.toSummary(): JudgeAssignmentSummaryDto =
         submissionStatus = submissionStatus,
         submissionStatusText = submissionStatusText,
     )
+
+private fun LocalJudgeAssignmentRaw.toSummary(): JudgeAssignmentSummaryDto =
+    JudgeAssignmentSummaryDto(
+        courseId = courseId,
+        courseName = courseName,
+        assignmentId = assignmentId,
+        title = title,
+        submissionStatus = JudgeSubmissionStatus.UNKNOWN,
+        submissionStatusText = "未知状态",
+    )
+
+private fun localJudgeNotFoundException(): ApiCallException =
+    ApiCallException(
+        message = "希冀作业不存在或无权限访问，请刷新后重试",
+        status = HttpStatusCode.NotFound,
+        code = "judge_not_found",
+    )
+
+private suspend fun <T, R> Iterable<T>.mapConcurrently(
+    concurrency: Int,
+    transform: suspend (T) -> R,
+): List<R> = coroutineScope {
+  val semaphore = Semaphore(concurrency)
+  map { item -> async { semaphore.withPermit { transform(item) } } }.awaitAll()
+}
+
+private fun localJudgeNowMillis(): Long = Clock.System.now().toEpochMilliseconds()
+
+private const val LOCAL_JUDGE_ASSIGNMENT_QUERY_CONCURRENCY = 4
 
 private fun isLocalJudgeSessionExpired(response: HttpResponse, body: String): Boolean {
   if (response.status == HttpStatusCode.Unauthorized) return true

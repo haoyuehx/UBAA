@@ -73,18 +73,7 @@ class LocalJudgeApiBackendTest {
             )
         "/assignment/index.jsp" ->
             if (request.url.parameters["assignID"] == "101") {
-              respondHtml(
-                  """
-                  <html><body>
-                    作业时间：2026-04-20 19:00:00 至 2026-05-03 23:00:00
-                    作业满分： 100.00 ，共 2道 题
-                    <table><tbody>
-                      <tr><th>1.</th><td>设计说明</td><td>60.00</td><td>初次提交时间: 2026-04-17 12:24:26 得分：60.00</td></tr>
-                      <tr><th>2.</th><td>用例设计</td><td>40.00</td><td>未提交答案</td></tr>
-                    </tbody></table>
-                  </body></html>
-                  """
-              )
+              error("Assignment list should not fetch detail pages")
             } else {
               respondHtml(
                   """<html><body><a href="assignment/index.jsp?assignID=101">设计作业</a></body></html>"""
@@ -102,9 +91,10 @@ class LocalJudgeApiBackendTest {
     assertEquals("1", assignment?.courseId)
     assertEquals("101", assignment?.assignmentId)
     assertEquals("设计作业", assignment?.title)
-    assertEquals(JudgeSubmissionStatus.PARTIAL, assignment?.submissionStatus)
+    assertEquals(JudgeSubmissionStatus.UNKNOWN, assignment?.submissionStatus)
     assertTrue(requestedPaths.contains("/courselist.jsp?courseID=0"))
     assertTrue(requestedPaths.contains("/courselist.jsp?courseID=1"))
+    assertTrue(!requestedPaths.contains("/assignment/index.jsp?assignID=101"))
   }
 
   @Test
@@ -119,10 +109,10 @@ class LocalJudgeApiBackendTest {
           respond(
               content = ByteReadChannel.Empty,
               status = HttpStatusCode.Found,
-              headers = headersOf(HttpHeaders.Location, "https://judge.buaa.edu.cn/"),
+              headers = headersOf(HttpHeaders.Location, "http://judge.buaa.edu.cn/"),
           )
         }
-        "https://judge.buaa.edu.cn/" -> respondHtml("<html><body>judge ready</body></html>")
+        "http://judge.buaa.edu.cn/" -> respondHtml("<html><body>judge ready</body></html>")
         "https://judge.buaa.edu.cn/courselist.jsp?courseID=0" ->
             if (judgeSessionActive) {
               respondHtml(
@@ -159,7 +149,7 @@ class LocalJudgeApiBackendTest {
         else -> error("Unexpected request: ${request.method.value} ${request.url}")
       }
     }
-    useMockUpstream(engine)
+    useMockUpstream(engine, followRedirectsOverride = false)
 
     val result = JudgeApi().getAssignments()
 
@@ -172,6 +162,7 @@ class LocalJudgeApiBackendTest {
         "https://sso.buaa.edu.cn/login?service=http%3A%2F%2Fjudge.buaa.edu.cn%2F",
         requestedUrls.firstOrNull(),
     )
+    assertEquals("http://judge.buaa.edu.cn/", requestedUrls.getOrNull(1))
   }
 
   @Test
@@ -291,7 +282,7 @@ class LocalJudgeApiBackendTest {
 
     assertTrue(result.isSuccess, result.exceptionOrNull()?.message.orEmpty())
     assertEquals("设计作业", result.getOrNull()?.assignments?.single()?.title)
-    assertEquals(2, serviceActivations)
+    assertEquals(3, serviceActivations)
     assertEquals(2, courseListRequests)
   }
 
@@ -343,11 +334,20 @@ class LocalJudgeApiBackendTest {
     assertEquals(listOf("设计说明", "用例设计"), detail?.problems?.map { it.name })
   }
 
-  private fun useMockUpstream(engine: MockEngine) {
+  private fun useMockUpstream(
+      engine: MockEngine,
+      followRedirectsOverride: Boolean? = null,
+  ) {
     LocalUpstreamClientProvider.clientFactory = { followRedirects ->
       HttpClient(engine) {
-        this.followRedirects = followRedirects
+        this.followRedirects = followRedirectsOverride ?: followRedirects
         install(HttpCookies) { storage = LocalCookieStore.storage(ConnectionMode.DIRECT) }
+      }
+    }
+    LocalUpstreamClientProvider.isolatedClientFactory = { followRedirects, cookieStorage ->
+      HttpClient(engine) {
+        this.followRedirects = followRedirectsOverride ?: followRedirects
+        install(HttpCookies) { storage = cookieStorage }
       }
     }
   }
