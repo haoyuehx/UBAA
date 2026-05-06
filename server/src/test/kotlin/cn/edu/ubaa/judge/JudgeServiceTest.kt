@@ -3,6 +3,7 @@ package cn.edu.ubaa.judge
 import cn.edu.ubaa.auth.InMemoryCookieStorageFactory
 import cn.edu.ubaa.auth.InMemorySessionStore
 import cn.edu.ubaa.auth.SessionManager
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto
 import cn.edu.ubaa.model.dto.JudgeSubmissionStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -10,10 +11,11 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.datetime.LocalDateTime
 
 class JudgeServiceTest {
   @Test
-  fun `get assignments returns cheap summaries without fetching details`() = runBlocking {
+  fun `get assignments returns detail-backed summaries`() = runBlocking {
     val fakeClient = FakeJudgeClient()
     val service = JudgeService(clientProvider = { fakeClient })
 
@@ -23,13 +25,59 @@ class JudgeServiceTest {
     assertEquals(listOf("102", "101"), response.assignments.map { it.assignmentId })
     assertEquals(listOf("算法设计", "软件工程"), response.assignments.map { it.courseName })
     assertEquals(
-        listOf(JudgeSubmissionStatus.UNKNOWN, JudgeSubmissionStatus.UNKNOWN),
+        listOf(JudgeSubmissionStatus.UNSUBMITTED, JudgeSubmissionStatus.PARTIAL),
         response.assignments.map { it.submissionStatus },
     )
     assertEquals(1, fakeClient.courseCalls)
     assertEquals(2, fakeClient.assignmentCalls)
-    assertEquals(0, fakeClient.detailCalls)
+    assertEquals(2, fakeClient.detailCalls)
   }
+
+  @Test
+  fun `get assignments fetches details per course and stops after six month old assignment`() =
+      runBlocking {
+        val fakeClient = FakeJudgeClient(oldAssignmentFixture = true)
+        val service =
+            JudgeService(
+                clientProvider = { fakeClient },
+                nowProvider = { LocalDateTime.parse("2026-05-01T12:00:00") },
+            )
+
+        val response = service.getAssignments("24182104", includeExpired = false)
+
+        assertEquals(listOf("102", "101"), response.assignments.map { it.assignmentId })
+        assertEquals(
+            listOf(JudgeSubmissionStatus.UNSUBMITTED, JudgeSubmissionStatus.PARTIAL),
+            response.assignments.map { it.submissionStatus },
+        )
+        assertTrue(
+            fakeClient.detailRequestIds.containsAll(listOf("101", "102", "103")),
+            "expected recent assignments and the old sentinel to be inspected",
+        )
+        assertTrue(
+            "104" !in fakeClient.detailRequestIds,
+            "expected course traversal to stop before assignments after the old sentinel",
+        )
+      }
+
+  @Test
+  fun `get assignments includes old assignments when expired assignments are requested`() =
+      runBlocking {
+        val fakeClient = FakeJudgeClient(oldAssignmentFixture = true)
+        val service =
+            JudgeService(
+                clientProvider = { fakeClient },
+                nowProvider = { LocalDateTime.parse("2026-05-01T12:00:00") },
+            )
+
+        val response = service.getAssignments("24182104", includeExpired = true)
+
+        assertEquals(
+            listOf("104", "103", "102", "101"),
+            response.assignments.map { it.assignmentId },
+        )
+        assertTrue("104" in fakeClient.detailRequestIds)
+      }
 
   @Test
   fun `get assignment detail keeps problem list`() = runBlocking {
@@ -82,6 +130,40 @@ class JudgeServiceTest {
   }
 
   @Test
+  fun `batch assignment detail reuses course queries and caches repeated details`() = runBlocking {
+    val fakeClient = FakeJudgeClient()
+    val service = JudgeService(clientProvider = { fakeClient })
+    val keys =
+        listOf(
+            JudgeAssignmentDetailKeyDto(courseId = "1", assignmentId = "101"),
+            JudgeAssignmentDetailKeyDto(courseId = "1", assignmentId = "101"),
+            JudgeAssignmentDetailKeyDto(courseId = "2", assignmentId = "102"),
+        )
+
+    val first = service.getAssignmentDetails("24182104", keys)
+    val second = service.getAssignmentDetails("24182104", keys)
+
+    assertEquals(listOf("101", "102"), first.details.map { it.assignmentId })
+    assertEquals(listOf("101", "102"), second.details.map { it.assignmentId })
+    assertEquals(1, fakeClient.courseCalls)
+    assertEquals(2, fakeClient.assignmentCalls)
+    assertEquals(2, fakeClient.detailCalls)
+  }
+
+  @Test
+  fun `empty assignment list is not cached so later refresh can recover`() = runBlocking {
+    val fakeClient = FakeJudgeClient(emptyFirstAssignmentList = true)
+    val service = JudgeService(clientProvider = { fakeClient })
+
+    val first = service.getAssignments("24182104")
+    val second = service.getAssignments("24182104")
+
+    assertEquals(emptyList(), first.assignments)
+    assertEquals(listOf("102", "101"), second.assignments.map { it.assignmentId })
+    assertTrue(fakeClient.assignmentCalls > 2, "expected second request to refetch empty lists")
+  }
+
+  @Test
   fun `cleanup expired clients closes removed clients only`() {
     val fakeClient = FakeJudgeClient()
     val service = JudgeService(clientProvider = { fakeClient })
@@ -94,7 +176,11 @@ class JudgeServiceTest {
     assertEquals(1, fakeClient.closeCalls)
   }
 
-  private class FakeJudgeClient(private val delayOperations: Boolean = false) :
+  private class FakeJudgeClient(
+      private val delayOperations: Boolean = false,
+      private val emptyFirstAssignmentList: Boolean = false,
+      private val oldAssignmentFixture: Boolean = false,
+  ) :
       JudgeClient(
           username = "24182104",
           sessionManager =
@@ -106,11 +192,13 @@ class JudgeServiceTest {
     var courseCalls = 0
     var assignmentCalls = 0
     var detailCalls = 0
+    val detailRequestIds = mutableListOf<String>()
     var closeCalls = 0
     var maxActiveCalls = 0
       private set
 
     private var activeCalls = 0
+    private var shouldReturnEmptyAssignments = emptyFirstAssignmentList
 
     override suspend fun getCourses(): List<JudgeCourseRaw> {
       return tracked {
@@ -125,8 +213,23 @@ class JudgeServiceTest {
     override suspend fun getAssignments(course: JudgeCourseRaw): List<JudgeAssignmentRaw> {
       return tracked {
         assignmentCalls++
+        if (shouldReturnEmptyAssignments) {
+          if (assignmentCalls >= 2) {
+            shouldReturnEmptyAssignments = false
+          }
+          return@tracked emptyList()
+        }
         when (course.courseId) {
-          "1" -> listOf(JudgeAssignmentRaw("101", "1", "软件工程", "设计作业"))
+          "1" ->
+              if (oldAssignmentFixture) {
+                listOf(
+                    JudgeAssignmentRaw("101", "1", "软件工程", "设计作业"),
+                    JudgeAssignmentRaw("103", "1", "软件工程", "历史作业"),
+                    JudgeAssignmentRaw("104", "1", "软件工程", "更早作业"),
+                )
+              } else {
+                listOf(JudgeAssignmentRaw("101", "1", "软件工程", "设计作业"))
+              }
           "2" -> listOf(JudgeAssignmentRaw("102", "2", "算法设计", "编程作业"))
           else -> emptyList()
         }
@@ -141,10 +244,12 @@ class JudgeServiceTest {
     ): JudgeAssignmentParsedDetail {
       return tracked {
         detailCalls++
+        detailRequestIds += assignmentId
         JudgeParsers.parseAssignmentDetail(
             html =
-                if (assignmentId == "101") {
-                  """
+                when (assignmentId) {
+                  "101" ->
+                      """
                 <html><body>
                   作业时间：2026-04-20 19:00:00 至 2026-05-03 23:00:00
                   作业满分： 100.00 ，共 2道 题
@@ -154,13 +259,33 @@ class JudgeServiceTest {
                   </tbody></table>
                 </body></html>
                 """
-                } else {
-                  """
+                  "102" ->
+                      """
                 <html><body>
                   作业时间：2026-04-10 08:00:00 至 2026-04-18 23:00:00
-                  作业满分： 20.00 ，共 1道 题 总分：20.00
+                  作业满分： 20.00 ，共 1道 题
                   <table><tbody>
-                    <tr><th>1.</th><td>程序题</td><td>20.00</td><td>最后一次提交时间：2026-04-17 12:00:00 得分：20.00</td></tr>
+                    <tr><th>1.</th><td>程序题</td><td>20.00</td><td>未提交答案</td></tr>
+                  </tbody></table>
+                </body></html>
+                """
+                  "103" ->
+                      """
+                <html><body>
+                  作业时间：2025-10-30 08:00:00 至 2025-11-10 23:00:00
+                  作业满分： 10.00 ，共 1道 题 总分：10.00
+                  <table><tbody>
+                    <tr><th>1.</th><td>历史题</td><td>10.00</td><td>最后一次提交时间：2025-11-01 12:00:00 得分：10.00</td></tr>
+                  </tbody></table>
+                </body></html>
+                """
+                  else ->
+                      """
+                <html><body>
+                  作业时间：2025-09-01 08:00:00 至 2025-09-10 23:00:00
+                  作业满分： 10.00 ，共 1道 题 总分：10.00
+                  <table><tbody>
+                    <tr><th>1.</th><td>更早题</td><td>10.00</td><td>最后一次提交时间：2025-09-02 12:00:00 得分：10.00</td></tr>
                   </tbody></table>
                 </body></html>
                 """

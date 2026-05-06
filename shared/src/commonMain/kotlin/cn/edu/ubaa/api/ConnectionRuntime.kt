@@ -106,6 +106,7 @@ object ConnectionRuntime {
     CredentialStore.setAutoLogin(false)
     ApiClientProvider.reset()
     LocalUpstreamClientProvider.reset()
+    LocalJudgeApiCache.clearAll()
     GlobalTermRepository.instance.clear()
   }
 

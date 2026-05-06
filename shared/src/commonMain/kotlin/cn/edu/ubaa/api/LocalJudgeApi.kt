@@ -1,6 +1,8 @@
 package cn.edu.ubaa.api
 
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailDto
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailsResponse
 import cn.edu.ubaa.model.dto.JudgeAssignmentSummaryDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentsResponse
 import cn.edu.ubaa.model.dto.JudgeProblemDto
@@ -25,10 +27,17 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 
-internal class LocalJudgeApiBackend : JudgeApiBackend {
-  override suspend fun getAssignments(): Result<JudgeAssignmentsResponse> =
-      runLocalJudgeCall("希冀作业列表加载失败，请稍后重试") { getAssignmentsResponse() }
+internal class LocalJudgeApiBackend(
+    private val nowProvider: () -> LocalDateTime = {
+      Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+    }
+) : JudgeApiBackend {
+  override suspend fun getAssignments(includeExpired: Boolean): Result<JudgeAssignmentsResponse> =
+      runLocalJudgeCall("希冀作业列表加载失败，请稍后重试") { getAssignmentsResponse(includeExpired) }
 
   override suspend fun getAssignmentDetail(
       courseId: String,
@@ -36,13 +45,24 @@ internal class LocalJudgeApiBackend : JudgeApiBackend {
   ): Result<JudgeAssignmentDetailDto> =
       runLocalJudgeCall("希冀作业详情加载失败，请稍后重试") { getAssignmentDetailResponse(courseId, assignmentId) }
 
-  private suspend fun LocalJudgeClient.getAssignmentsResponse(): JudgeAssignmentsResponse {
-    val courses = getCourses()
+  override suspend fun getAssignmentDetails(
+      keys: List<JudgeAssignmentDetailKeyDto>
+  ): Result<JudgeAssignmentDetailsResponse> =
+      runLocalJudgeCall("希冀作业详情加载失败，请稍后重试") { getAssignmentDetailsResponse(keys) }
+
+  private suspend fun LocalJudgeClient.getAssignmentsResponse(
+      includeExpired: Boolean
+  ): JudgeAssignmentsResponse {
+    val courses = getCoursesCached()
     val assignments =
         courses
             .mapConcurrently(LOCAL_JUDGE_ASSIGNMENT_QUERY_CONCURRENCY) { course ->
               withIsolatedClient { worker ->
-                worker.getAssignments(course).map { assignment -> assignment.toSummary() }
+                getAssignmentSummaries(
+                    course = course,
+                    includeExpired = includeExpired,
+                    worker = worker,
+                )
               }
             }
             .flatten()
@@ -55,49 +75,120 @@ internal class LocalJudgeApiBackend : JudgeApiBackend {
     return JudgeAssignmentsResponse(assignments)
   }
 
+  private suspend fun LocalJudgeClient.getAssignmentSummaries(
+      course: LocalJudgeCourseRaw,
+      includeExpired: Boolean,
+      worker: LocalJudgeClient,
+  ): List<JudgeAssignmentSummaryDto> {
+    val assignments = getAssignmentsCached(course) { worker.getAssignments(course) }
+    val summaries = mutableListOf<JudgeAssignmentSummaryDto>()
+    for (assignment in assignments) {
+      val cacheKey =
+          LocalJudgeDetailCacheKey(
+              scope = cacheScope,
+              courseId = assignment.courseId,
+              assignmentId = assignment.assignmentId,
+          )
+      val detail =
+          getDetailCached(cacheKey) {
+            worker.getAssignmentDetail(
+                courseId = assignment.courseId,
+                courseName = assignment.courseName,
+                assignmentId = assignment.assignmentId,
+                title = assignment.title,
+            )
+          }
+      if (!includeExpired && detail.startedBeforeSixMonthCutoff()) {
+        break
+      }
+      summaries += detail.toSummary()
+    }
+    return summaries
+  }
+
   private suspend fun LocalJudgeClient.getAssignmentDetailResponse(
       courseId: String,
       assignmentId: String,
-  ): JudgeAssignmentDetailDto {
-    val course =
-        getCourses().firstOrNull { it.courseId == courseId } ?: throw localJudgeNotFoundException()
+  ): JudgeAssignmentDetailDto =
+      getAssignmentDetailsResponse(
+              listOf(JudgeAssignmentDetailKeyDto(courseId = courseId, assignmentId = assignmentId))
+          )
+          .details
+          .firstOrNull() ?: throw localJudgeNotFoundException()
 
-    return withIsolatedClient { worker ->
-      val assignment =
-          worker.getAssignments(course).firstOrNull { assignment ->
-            assignment.assignmentId == assignmentId
-          } ?: throw localJudgeNotFoundException()
+  private suspend fun LocalJudgeClient.getAssignmentDetailsResponse(
+      keys: List<JudgeAssignmentDetailKeyDto>
+  ): JudgeAssignmentDetailsResponse {
+    val normalizedKeys = normalizeLocalJudgeDetailKeys(keys)
+    if (normalizedKeys.isEmpty()) return JudgeAssignmentDetailsResponse(emptyList())
 
-      worker.getAssignmentDetail(
-          courseId = assignment.courseId,
-          courseName = assignment.courseName,
-          assignmentId = assignment.assignmentId,
-          title = assignment.title,
-      )
-    }
+    val courses = getCoursesCached().associateBy { it.courseId }
+    val details =
+        normalizedKeys
+            .groupBy { it.courseId }
+            .entries
+            .mapConcurrently(LOCAL_JUDGE_ASSIGNMENT_QUERY_CONCURRENCY) { (courseId, courseKeys) ->
+              val course = courses[courseId] ?: throw localJudgeNotFoundException()
+              withIsolatedClient { worker ->
+                val assignments =
+                    getAssignmentsCached(course) { worker.getAssignments(course) }
+                        .associateBy { it.assignmentId }
+                courseKeys.map { key ->
+                  val assignment =
+                      assignments[key.assignmentId] ?: throw localJudgeNotFoundException()
+                  val cacheKey =
+                      LocalJudgeDetailCacheKey(
+                          scope = cacheScope,
+                          courseId = assignment.courseId,
+                          assignmentId = assignment.assignmentId,
+                      )
+                  getDetailCached(cacheKey) {
+                    worker.getAssignmentDetail(
+                        courseId = assignment.courseId,
+                        courseName = assignment.courseName,
+                        assignmentId = assignment.assignmentId,
+                        title = assignment.title,
+                    )
+                  }
+                }
+              }
+            }
+            .flatten()
+
+    return JudgeAssignmentDetailsResponse(details)
   }
 
   private suspend fun <T> runLocalJudgeCall(
       defaultMessage: String,
       block: suspend LocalJudgeClient.() -> T,
   ): Result<T> {
-    if (LocalAuthSessionStore.get() == null) {
-      return Result.failure(localUnauthenticatedApiException())
-    }
+    val session =
+        LocalAuthSessionStore.get() ?: return Result.failure(localUnauthenticatedApiException())
 
     return try {
-      Result.success(LocalJudgeClient().block())
+      val mode =
+          ConnectionRuntime.currentMode()?.takeIf { it != ConnectionMode.SERVER_RELAY }
+              ?: ConnectionMode.DIRECT
+      Result.success(
+          LocalJudgeClient(cacheScope = LocalJudgeCacheScope(mode, session.username)).block()
+      )
     } catch (e: LocalJudgeAuthenticationException) {
       Result.failure(resolveLocalBusinessAuthenticationFailure("judge_auth_failed"))
     } catch (e: Exception) {
       Result.failure(e.toUserFacingApiException(defaultMessage))
     }
   }
+
+  private fun JudgeAssignmentDetailDto.startedBeforeSixMonthCutoff(): Boolean {
+    val startAt = parseLocalJudgeDateTime(startTime) ?: return false
+    return startAt < nowProvider().minusLocalJudgeMonths(6)
+  }
 }
 
 private class LocalJudgeClient(
     private val httpClient: HttpClient = LocalUpstreamClientProvider.shared(),
     private val ownsHttpClient: Boolean = false,
+    val cacheScope: LocalJudgeCacheScope,
 ) {
   private val courseSelectionMutex = Mutex()
   private var judgeSessionActivated = false
@@ -136,6 +227,46 @@ private class LocalJudgeClient(
           title = title,
       )
     }
+  }
+
+  suspend fun getCoursesCached(): List<LocalJudgeCourseRaw> {
+    LocalJudgeApiCache.getCourses(cacheScope)?.let {
+      return it
+    }
+    val fetched = getCourses()
+    if (fetched.isNotEmpty()) {
+      LocalJudgeApiCache.putCourses(cacheScope, fetched)
+    }
+    return fetched
+  }
+
+  suspend fun getAssignmentsCached(
+      course: LocalJudgeCourseRaw,
+      fetch: suspend () -> List<LocalJudgeAssignmentRaw>,
+  ): List<LocalJudgeAssignmentRaw> {
+    val key = LocalJudgeCourseCacheKey(cacheScope, course.courseId)
+    LocalJudgeApiCache.getAssignments(key)?.let {
+      return it
+    }
+    val fetched = fetch()
+    if (fetched.isNotEmpty()) {
+      LocalJudgeApiCache.putAssignments(key, fetched)
+    } else {
+      LocalJudgeApiCache.clearAssignments(key)
+    }
+    return fetched
+  }
+
+  suspend fun getDetailCached(
+      key: LocalJudgeDetailCacheKey,
+      fetch: suspend () -> JudgeAssignmentDetailDto,
+  ): JudgeAssignmentDetailDto {
+    LocalJudgeApiCache.getDetail(key)?.let {
+      return it
+    }
+    val fetched = fetch()
+    LocalJudgeApiCache.putDetail(key, fetched)
+    return fetched
   }
 
   private suspend fun ensureJudgeSession(forceRefresh: Boolean = false) {
@@ -183,7 +314,8 @@ private class LocalJudgeClient(
             ?: ConnectionMode.DIRECT
     val cookieStorage = ForkedLocalJudgeCookieStorage(LocalCookieStore.storage(mode))
     val client = LocalUpstreamClientProvider.newClient(cookieStorage)
-    val worker = LocalJudgeClient(httpClient = client, ownsHttpClient = true)
+    val worker =
+        LocalJudgeClient(httpClient = client, ownsHttpClient = true, cacheScope = cacheScope)
     return try {
       block(worker)
     } finally {
@@ -330,17 +462,99 @@ private fun resolveJudgeRedirectUrl(baseUrl: String, location: String): String {
 
 private class LocalJudgeAuthenticationException(message: String) : RuntimeException(message)
 
-private data class LocalJudgeCourseRaw(
+internal data class LocalJudgeCourseRaw(
     val courseId: String,
     val courseName: String,
 )
 
-private data class LocalJudgeAssignmentRaw(
+internal data class LocalJudgeAssignmentRaw(
     val assignmentId: String,
     val courseId: String,
     val courseName: String,
     val title: String,
 )
+
+internal data class LocalJudgeCacheScope(
+    val mode: ConnectionMode,
+    val username: String,
+)
+
+internal data class LocalJudgeCourseCacheKey(
+    val scope: LocalJudgeCacheScope,
+    val courseId: String,
+)
+
+internal data class LocalJudgeDetailCacheKey(
+    val scope: LocalJudgeCacheScope,
+    val courseId: String,
+    val assignmentId: String,
+)
+
+internal object LocalJudgeApiCache {
+  private data class Entry<T>(
+      val value: T,
+      val cachedAt: Long,
+  )
+
+  private val mutex = Mutex()
+  private val coursesByScope =
+      mutableMapOf<LocalJudgeCacheScope, Entry<List<LocalJudgeCourseRaw>>>()
+  private val assignmentsByCourse =
+      mutableMapOf<LocalJudgeCourseCacheKey, Entry<List<LocalJudgeAssignmentRaw>>>()
+  private val detailsByAssignment =
+      mutableMapOf<LocalJudgeDetailCacheKey, Entry<JudgeAssignmentDetailDto>>()
+
+  fun clearAll() {
+    coursesByScope.clear()
+    assignmentsByCourse.clear()
+    detailsByAssignment.clear()
+  }
+
+  suspend fun getCourses(scope: LocalJudgeCacheScope): List<LocalJudgeCourseRaw>? =
+      mutex.withLock { coursesByScope[scope]?.takeIfFresh(LOCAL_JUDGE_LIST_TTL_MILLIS)?.value }
+
+  suspend fun putCourses(
+      scope: LocalJudgeCacheScope,
+      courses: List<LocalJudgeCourseRaw>,
+  ) {
+    mutex.withLock { coursesByScope[scope] = Entry(courses, localJudgeNowMillis()) }
+  }
+
+  suspend fun getAssignments(key: LocalJudgeCourseCacheKey): List<LocalJudgeAssignmentRaw>? =
+      mutex.withLock { assignmentsByCourse[key]?.takeIfFresh(LOCAL_JUDGE_LIST_TTL_MILLIS)?.value }
+
+  suspend fun putAssignments(
+      key: LocalJudgeCourseCacheKey,
+      assignments: List<LocalJudgeAssignmentRaw>,
+  ) {
+    mutex.withLock { assignmentsByCourse[key] = Entry(assignments, localJudgeNowMillis()) }
+  }
+
+  suspend fun clearAssignments(key: LocalJudgeCourseCacheKey) {
+    mutex.withLock { assignmentsByCourse.remove(key) }
+  }
+
+  suspend fun getDetail(key: LocalJudgeDetailCacheKey): JudgeAssignmentDetailDto? =
+      mutex.withLock { detailsByAssignment[key]?.takeIfFresh(LOCAL_JUDGE_DETAIL_TTL_MILLIS)?.value }
+
+  suspend fun putDetail(
+      key: LocalJudgeDetailCacheKey,
+      detail: JudgeAssignmentDetailDto,
+  ) {
+    mutex.withLock { detailsByAssignment[key] = Entry(detail, localJudgeNowMillis()) }
+  }
+
+  private fun <T> Entry<T>.takeIfFresh(ttlMillis: Long): Entry<T>? = takeIf {
+    localJudgeNowMillis() - cachedAt < ttlMillis
+  }
+}
+
+private fun normalizeLocalJudgeDetailKeys(
+    keys: List<JudgeAssignmentDetailKeyDto>
+): List<JudgeAssignmentDetailKeyDto> =
+    keys
+        .filter { it.courseId.isNotBlank() && it.assignmentId.isNotBlank() }
+        .distinctBy { it.courseId to it.assignmentId }
 
 private object LocalJudgeHtmlParsers {
   private val linkOptions = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
@@ -716,7 +930,53 @@ private suspend fun <T, R> Iterable<T>.mapConcurrently(
 
 private fun localJudgeNowMillis(): Long = Clock.System.now().toEpochMilliseconds()
 
+private fun parseLocalJudgeDateTime(value: String?): LocalDateTime? {
+  val normalized = value?.trim()?.takeIf { it.isNotEmpty() }?.replace(" ", "T") ?: return null
+  return runCatching { LocalDateTime.parse(normalized) }.getOrNull()
+}
+
+private fun LocalDateTime.minusLocalJudgeMonths(months: Int): LocalDateTime {
+  var targetYear = year
+  var targetMonth = month.ordinal + 1 - months
+  while (targetMonth <= 0) {
+    targetMonth += 12
+    targetYear--
+  }
+  val targetDay = minOf(day, localJudgeDaysInMonth(targetYear, targetMonth))
+  return LocalDateTime(
+      targetYear,
+      targetMonth,
+      targetDay,
+      hour,
+      minute,
+      second,
+      nanosecond,
+  )
+}
+
+private fun localJudgeDaysInMonth(year: Int, month: Int): Int =
+    when (month) {
+      1,
+      3,
+      5,
+      7,
+      8,
+      10,
+      12 -> 31
+      4,
+      6,
+      9,
+      11 -> 30
+      2 -> if (localJudgeIsLeapYear(year)) 29 else 28
+      else -> 30
+    }
+
+private fun localJudgeIsLeapYear(year: Int): Boolean =
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+
 private const val LOCAL_JUDGE_ASSIGNMENT_QUERY_CONCURRENCY = 4
+private const val LOCAL_JUDGE_LIST_TTL_MILLIS = 5 * 60 * 1000L
+private const val LOCAL_JUDGE_DETAIL_TTL_MILLIS = 2 * 60 * 1000L
 
 private fun isLocalJudgeSessionExpired(response: HttpResponse, body: String): Boolean {
   if (response.status == HttpStatusCode.Unauthorized) return true

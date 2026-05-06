@@ -4,12 +4,15 @@ import cn.edu.ubaa.auth.JwtAuth.requireUserSession
 import cn.edu.ubaa.auth.respondError
 import cn.edu.ubaa.metrics.BusinessOperationScope
 import cn.edu.ubaa.metrics.observeBusinessOperation
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailsRequest
 import cn.edu.ubaa.utils.UpstreamTimeoutException
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
+import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 
 /** 注册希冀作业查询相关路由。 */
@@ -19,9 +22,14 @@ fun Route.judgeRouting() {
   route("/api/v1/judge") {
     get("/assignments") {
       val session = call.requireUserSession()
+      val includeExpired =
+          call.request.queryParameters["includeExpired"]?.toBooleanStrictOrNull() ?: false
       call.observeBusinessOperation("judge", "list_assignments") {
         call.runJudgeCall(this) {
-          call.respond(HttpStatusCode.OK, judgeService.getAssignments(session.username))
+          call.respond(
+              HttpStatusCode.OK,
+              judgeService.getAssignments(session.username, includeExpired = includeExpired),
+          )
         }
       }
     }
@@ -40,6 +48,19 @@ fun Route.judgeRouting() {
           call.respond(
               HttpStatusCode.OK,
               judgeService.getAssignmentDetail(session.username, courseId, assignmentId),
+          )
+        }
+      }
+    }
+
+    post("/assignment-details") {
+      val session = call.requireUserSession()
+      val request = call.receive<JudgeAssignmentDetailsRequest>()
+      call.observeBusinessOperation("judge", "batch_assignment_details") {
+        call.runJudgeCall(this) {
+          call.respond(
+              HttpStatusCode.OK,
+              judgeService.getAssignmentDetails(session.username, request.keys),
           )
         }
       }

@@ -17,6 +17,25 @@ data class JudgeAssignmentsResponse(
     val assignments: List<JudgeAssignmentSummaryDto>,
 )
 
+/** 希冀作业详情批量查询键。 */
+@Serializable
+data class JudgeAssignmentDetailKeyDto(
+    val courseId: String,
+    val assignmentId: String,
+)
+
+/** 希冀作业详情批量查询请求。 */
+@Serializable
+data class JudgeAssignmentDetailsRequest(
+    val keys: List<JudgeAssignmentDetailKeyDto>,
+)
+
+/** 希冀作业详情批量查询响应。 */
+@Serializable
+data class JudgeAssignmentDetailsResponse(
+    val details: List<JudgeAssignmentDetailDto>,
+)
+
 /** 希冀作业摘要信息。 */
 @Serializable
 data class JudgeAssignmentSummaryDto(

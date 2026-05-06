@@ -1,6 +1,8 @@
 package cn.edu.ubaa.api
 
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailDto
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailsResponse
 import cn.edu.ubaa.model.dto.JudgeAssignmentSummaryDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentsResponse
 import cn.edu.ubaa.model.dto.JudgeProblemDto
@@ -9,6 +11,7 @@ import com.russhwolf.settings.MapSettings
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteReadChannel
@@ -67,8 +70,30 @@ class JudgeApiTest {
 
     val result = api.getAssignments()
 
-    assertTrue(result.isSuccess)
+    assertTrue(result.isSuccess, result.exceptionOrNull()?.message.orEmpty())
     assertEquals("设计作业", result.getOrNull()?.assignments?.firstOrNull()?.title)
+  }
+
+  @Test
+  fun shouldPassIncludeExpiredWhenGetAssignmentsRequestsExpired() = runTest {
+    val mockEngine = MockEngine { request ->
+      assertEquals("/api/v1/judge/assignments", request.url.encodedPath)
+      assertEquals("true", request.url.parameters["includeExpired"])
+      respond(
+          content =
+              ByteReadChannel(
+                  json.encodeToString(JudgeAssignmentsResponse(assignments = emptyList()))
+              ),
+          status = HttpStatusCode.OK,
+          headers = headersOf(HttpHeaders.ContentType, "application/json"),
+      )
+    }
+
+    val api = JudgeApi(ApiClient(mockEngine))
+
+    val result = api.getAssignments(includeExpired = true)
+
+    assertTrue(result.isSuccess, result.exceptionOrNull()?.message.orEmpty())
   }
 
   @Test
@@ -114,8 +139,51 @@ class JudgeApiTest {
 
     val result = api.getAssignmentDetail("1", "101")
 
-    assertTrue(result.isSuccess)
+    assertTrue(result.isSuccess, result.exceptionOrNull()?.message.orEmpty())
     assertEquals("101", result.getOrNull()?.assignmentId)
     assertEquals("设计说明", result.getOrNull()?.problems?.firstOrNull()?.name)
+  }
+
+  @Test
+  fun shouldReturnAssignmentDetailsWhenBatchDetailSuccess() = runTest {
+    val mockEngine = MockEngine { request ->
+      assertEquals(HttpMethod.Post, request.method)
+      assertEquals("/api/v1/judge/assignment-details", request.url.encodedPath)
+      respond(
+          content =
+              ByteReadChannel(
+                  json.encodeToString(
+                      JudgeAssignmentDetailsResponse(
+                          details =
+                              listOf(
+                                  JudgeAssignmentDetailDto(
+                                      courseId = "1",
+                                      courseName = "软件工程",
+                                      assignmentId = "101",
+                                      title = "设计作业",
+                                      startTime = "2026-04-20 19:00:00",
+                                      dueTime = "2026-05-03 23:00:00",
+                                      maxScore = "100",
+                                      myScore = "60",
+                                      totalProblems = 2,
+                                      submittedCount = 1,
+                                      submissionStatus = JudgeSubmissionStatus.PARTIAL,
+                                      submissionStatusText = "进行中(1/2)",
+                                  )
+                              )
+                      )
+                  )
+              ),
+          status = HttpStatusCode.OK,
+          headers = headersOf(HttpHeaders.ContentType, "application/json"),
+      )
+    }
+
+    val api = JudgeApi(ApiClient(mockEngine))
+
+    val result = api.getAssignmentDetails(listOf(JudgeAssignmentDetailKeyDto("1", "101")))
+
+    assertTrue(result.isSuccess, result.exceptionOrNull()?.message.orEmpty())
+    assertEquals(listOf("101"), result.getOrNull()?.details?.map { it.assignmentId })
   }
 }

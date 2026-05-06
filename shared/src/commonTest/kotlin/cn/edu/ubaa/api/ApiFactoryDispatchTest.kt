@@ -276,9 +276,13 @@ private class FakeSpocApiBackend : SpocApiBackend {
 }
 
 private class FakeJudgeApiBackend : JudgeApiBackend {
-  override suspend fun getAssignments() = error("unused")
+  override suspend fun getAssignments(includeExpired: Boolean) = error("unused")
 
   override suspend fun getAssignmentDetail(courseId: String, assignmentId: String) = error("unused")
+
+  override suspend fun getAssignmentDetails(
+      keys: List<cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto>
+  ) = error("unused")
 }
 
 private class FakeBykcApiBackend : BykcApiBackend {

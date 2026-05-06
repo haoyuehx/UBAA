@@ -1,16 +1,28 @@
 package cn.edu.ubaa.api
 
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailDto
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailsRequest
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailsResponse
 import cn.edu.ubaa.model.dto.JudgeAssignmentsResponse
 import io.ktor.client.request.get
+import io.ktor.client.request.parameter
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
 
 interface JudgeApiBackend {
-  suspend fun getAssignments(): Result<JudgeAssignmentsResponse>
+  suspend fun getAssignments(includeExpired: Boolean = false): Result<JudgeAssignmentsResponse>
 
   suspend fun getAssignmentDetail(
       courseId: String,
       assignmentId: String,
   ): Result<JudgeAssignmentDetailDto>
+
+  suspend fun getAssignmentDetails(
+      keys: List<JudgeAssignmentDetailKeyDto>
+  ): Result<JudgeAssignmentDetailsResponse>
 }
 
 /** 希冀作业查询 API。 */
@@ -26,8 +38,10 @@ open class JudgeApi(
   private fun currentBackend(): JudgeApiBackend = backendProvider()
 
   /** 获取所有课程下的希冀作业摘要。 */
-  open suspend fun getAssignments(): Result<JudgeAssignmentsResponse> {
-    return currentBackend().getAssignments()
+  open suspend fun getAssignments(
+      includeExpired: Boolean = false
+  ): Result<JudgeAssignmentsResponse> {
+    return currentBackend().getAssignments(includeExpired)
   }
 
   /** 获取指定课程下的指定作业详情。 */
@@ -37,12 +51,25 @@ open class JudgeApi(
   ): Result<JudgeAssignmentDetailDto> {
     return currentBackend().getAssignmentDetail(courseId, assignmentId)
   }
+
+  /** 批量获取希冀作业详情，用于列表摘要的增量补全。 */
+  open suspend fun getAssignmentDetails(
+      keys: List<JudgeAssignmentDetailKeyDto>
+  ): Result<JudgeAssignmentDetailsResponse> {
+    return currentBackend().getAssignmentDetails(keys)
+  }
 }
 
 internal class RelayJudgeApiBackend(private val apiClient: ApiClient = ApiClientProvider.shared) :
     JudgeApiBackend {
-  override suspend fun getAssignments(): Result<JudgeAssignmentsResponse> {
-    return safeApiCall { apiClient.getClient().get("api/v1/judge/assignments") }
+  override suspend fun getAssignments(includeExpired: Boolean): Result<JudgeAssignmentsResponse> {
+    return safeApiCall {
+      apiClient.getClient().get("api/v1/judge/assignments") {
+        if (includeExpired) {
+          parameter("includeExpired", true)
+        }
+      }
+    }
   }
 
   override suspend fun getAssignmentDetail(
@@ -51,6 +78,21 @@ internal class RelayJudgeApiBackend(private val apiClient: ApiClient = ApiClient
   ): Result<JudgeAssignmentDetailDto> {
     return safeApiCall {
       apiClient.getClient().get("api/v1/judge/courses/$courseId/assignments/$assignmentId")
+    }
+  }
+
+  override suspend fun getAssignmentDetails(
+      keys: List<JudgeAssignmentDetailKeyDto>
+  ): Result<JudgeAssignmentDetailsResponse> {
+    val distinctKeys = keys.distinct()
+    if (distinctKeys.isEmpty()) {
+      return Result.success(JudgeAssignmentDetailsResponse(emptyList()))
+    }
+    return safeApiCall {
+      apiClient.getClient().post("api/v1/judge/assignment-details") {
+        contentType(ContentType.Application.Json)
+        setBody(JudgeAssignmentDetailsRequest(distinctKeys))
+      }
     }
   }
 }

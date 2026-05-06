@@ -1,5 +1,6 @@
 package cn.edu.ubaa.api
 
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto
 import cn.edu.ubaa.model.dto.JudgeSubmissionStatus
 import cn.edu.ubaa.model.dto.UserData
 import com.russhwolf.settings.MapSettings
@@ -19,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
+import kotlinx.datetime.LocalDateTime
 
 class LocalJudgeApiBackendTest {
   @BeforeTest
@@ -31,6 +33,7 @@ class LocalJudgeApiBackendTest {
     ConnectionModeStore.save(ConnectionMode.DIRECT)
     ConnectionRuntime.resolveSelectedMode()
     ConnectionRuntime.apiFactoryProvider = { DefaultApiFactory }
+    LocalJudgeApiCache.clearAll()
     LocalAuthSessionStore.save(
         LocalAuthSession(
             username = "22373333",
@@ -73,7 +76,17 @@ class LocalJudgeApiBackendTest {
             )
         "/assignment/index.jsp" ->
             if (request.url.parameters["assignID"] == "101") {
-              error("Assignment list should not fetch detail pages")
+              respondHtml(
+                  """
+                  <html><body>
+                    作业时间：2026-04-20 19:00:00 至 2026-05-03 23:00:00
+                    作业满分： 100.00 ，共 1道 题
+                    <table><tbody>
+                      <tr><th>1.</th><td>设计说明</td><td>100.00</td><td>未提交答案</td></tr>
+                    </tbody></table>
+                  </body></html>
+                  """
+              )
             } else {
               respondHtml(
                   """<html><body><a href="assignment/index.jsp?assignID=101">设计作业</a></body></html>"""
@@ -91,10 +104,81 @@ class LocalJudgeApiBackendTest {
     assertEquals("1", assignment?.courseId)
     assertEquals("101", assignment?.assignmentId)
     assertEquals("设计作业", assignment?.title)
-    assertEquals(JudgeSubmissionStatus.UNKNOWN, assignment?.submissionStatus)
+    assertEquals(JudgeSubmissionStatus.UNSUBMITTED, assignment?.submissionStatus)
     assertTrue(requestedPaths.contains("/courselist.jsp?courseID=0"))
     assertTrue(requestedPaths.contains("/courselist.jsp?courseID=1"))
-    assertTrue(!requestedPaths.contains("/assignment/index.jsp?assignID=101"))
+    assertTrue(requestedPaths.contains("/assignment/index.jsp?assignID=101"))
+  }
+
+  @Test
+  fun `judge api fetches assignment details until six month cutoff per course`() = runTest {
+    val requestedUrls = mutableListOf<String>()
+    val engine = MockEngine { request ->
+      requestedUrls += request.url.toString()
+      when (request.url.toString()) {
+        "https://sso.buaa.edu.cn/login?service=http%3A%2F%2Fjudge.buaa.edu.cn%2F" ->
+            respond(
+                content = ByteReadChannel.Empty,
+                status = HttpStatusCode.Found,
+                headers = headersOf(HttpHeaders.Location, "https://judge.buaa.edu.cn/"),
+            )
+        "https://judge.buaa.edu.cn/" -> respondHtml("<html><body>judge ready</body></html>")
+        "https://judge.buaa.edu.cn/courselist.jsp?courseID=0" ->
+            respondHtml(
+                """<html><body><a href="courselist.jsp?courseID=1">软件工程</a></body></html>"""
+            )
+        "https://judge.buaa.edu.cn/courselist.jsp?courseID=1" ->
+            respondHtml("<html><body>course selected</body></html>")
+        "https://judge.buaa.edu.cn/assignment/index.jsp" ->
+            respondHtml(
+                """
+                <html><body>
+                  <a href="assignment/index.jsp?assignID=101">设计作业</a>
+                  <a href="assignment/index.jsp?assignID=103">历史作业</a>
+                  <a href="assignment/index.jsp?assignID=104">更早作业</a>
+                </body></html>
+                """
+            )
+        "https://judge.buaa.edu.cn/assignment/index.jsp?assignID=101" ->
+            respondHtml(
+                """
+                <html><body>
+                  作业时间：2026-04-20 19:00:00 至 2026-05-03 23:00:00
+                  作业满分： 100.00 ，共 1道 题
+                  <table><tbody>
+                    <tr><th>1.</th><td>设计说明</td><td>100.00</td><td>未提交答案</td></tr>
+                  </tbody></table>
+                </body></html>
+                """
+            )
+        "https://judge.buaa.edu.cn/assignment/index.jsp?assignID=103" ->
+            respondHtml(
+                """
+                <html><body>
+                  作业时间：2025-10-30 08:00:00 至 2025-11-10 23:00:00
+                  作业满分： 10.00 ，共 1道 题 总分：10.00
+                  <table><tbody>
+                    <tr><th>1.</th><td>历史题</td><td>10.00</td><td>最后一次提交时间：2025-11-01 12:00:00 得分：10.00</td></tr>
+                  </tbody></table>
+                </body></html>
+                """
+            )
+        "https://judge.buaa.edu.cn/assignment/index.jsp?assignID=104" ->
+            error("Assignment after six month cutoff should not be fetched")
+        else -> error("Unexpected request: ${request.method.value} ${request.url}")
+      }
+    }
+    useMockUpstream(engine)
+    val api =
+        JudgeApi(LocalJudgeApiBackend(nowProvider = { LocalDateTime.parse("2026-05-01T12:00:00") }))
+
+    val result = api.getAssignments()
+
+    assertTrue(result.isSuccess, result.exceptionOrNull()?.message.orEmpty())
+    assertEquals(listOf("101"), result.getOrNull()?.assignments?.map { it.assignmentId })
+    assertTrue(
+        requestedUrls.contains("https://judge.buaa.edu.cn/assignment/index.jsp?assignID=103")
+    )
   }
 
   @Test
@@ -163,6 +247,62 @@ class LocalJudgeApiBackendTest {
         requestedUrls.firstOrNull(),
     )
     assertEquals("http://judge.buaa.edu.cn/", requestedUrls.getOrNull(1))
+  }
+
+  @Test
+  fun `judge api does not cache empty assignment lists`() = runTest {
+    var assignmentListRequests = 0
+    val engine = MockEngine { request ->
+      when (request.url.toString()) {
+        "https://sso.buaa.edu.cn/login?service=http%3A%2F%2Fjudge.buaa.edu.cn%2F" ->
+            respond(
+                content = ByteReadChannel.Empty,
+                status = HttpStatusCode.Found,
+                headers = headersOf(HttpHeaders.Location, "https://judge.buaa.edu.cn/"),
+            )
+        "https://judge.buaa.edu.cn/" -> respondHtml("<html><body>judge ready</body></html>")
+        "https://judge.buaa.edu.cn/courselist.jsp?courseID=0" ->
+            respondHtml(
+                """<html><body><a href="courselist.jsp?courseID=1">软件工程</a></body></html>"""
+            )
+        "https://judge.buaa.edu.cn/courselist.jsp?courseID=1" ->
+            respondHtml("<html><body>course selected</body></html>")
+        "https://judge.buaa.edu.cn/assignment/index.jsp?assignID=101" ->
+            respondHtml(
+                """
+                <html><body>
+                  作业时间：2026-04-20 19:00:00 至 2026-05-03 23:00:00
+                  作业满分： 100.00 ，共 1道 题
+                  <table><tbody>
+                    <tr><th>1.</th><td>设计说明</td><td>100.00</td><td>未提交答案</td></tr>
+                  </tbody></table>
+                </body></html>
+                """
+            )
+        "https://judge.buaa.edu.cn/assignment/index.jsp" -> {
+          assignmentListRequests++
+          if (assignmentListRequests == 1) {
+            respondHtml("<html><body>暂无作业</body></html>")
+          } else {
+            respondHtml(
+                """<html><body><a href="assignment/index.jsp?assignID=101">设计作业</a></body></html>"""
+            )
+          }
+        }
+        else -> error("Unexpected request: ${request.method.value} ${request.url}")
+      }
+    }
+    useMockUpstream(engine)
+    val api = JudgeApi()
+
+    val first = api.getAssignments()
+    val second = api.getAssignments()
+
+    assertTrue(first.isSuccess, first.exceptionOrNull()?.message.orEmpty())
+    assertTrue(second.isSuccess, second.exceptionOrNull()?.message.orEmpty())
+    assertEquals(emptyList(), first.getOrNull()?.assignments)
+    assertEquals(listOf("101"), second.getOrNull()?.assignments?.map { it.assignmentId })
+    assertEquals(2, assignmentListRequests)
   }
 
   @Test
@@ -334,14 +474,141 @@ class LocalJudgeApiBackendTest {
     assertEquals(listOf("设计说明", "用例设计"), detail?.problems?.map { it.name })
   }
 
+  @Test
+  fun `judge api batch details reuses local cache until session reset`() = runTest {
+    var detailRequests = 0
+    val engine = MockEngine { request ->
+      when (request.url.toString()) {
+        "https://sso.buaa.edu.cn/login?service=http%3A%2F%2Fjudge.buaa.edu.cn%2F" ->
+            respond(
+                content = ByteReadChannel.Empty,
+                status = HttpStatusCode.Found,
+                headers = headersOf(HttpHeaders.Location, "https://judge.buaa.edu.cn/"),
+            )
+        "https://judge.buaa.edu.cn",
+        "https://judge.buaa.edu.cn/" -> respondHtml("<html><body>judge ready</body></html>")
+        "https://judge.buaa.edu.cn/courselist.jsp?courseID=0" ->
+            respondHtml(
+                """<html><body><a href="courselist.jsp?courseID=1">软件工程</a></body></html>"""
+            )
+        "https://judge.buaa.edu.cn/courselist.jsp?courseID=1" ->
+            respondHtml("<html><body>course selected</body></html>")
+        "https://judge.buaa.edu.cn/assignment/index.jsp" ->
+            respondHtml(
+                """<html><body><a href="assignment/index.jsp?assignID=101">设计作业</a></body></html>"""
+            )
+        "https://judge.buaa.edu.cn/assignment/index.jsp?assignID=101" -> {
+          detailRequests++
+          respondHtml(
+              """
+                  <html><body>
+                    作业时间：2026-04-20 19:00:00 至 2026-05-03 23:00:00
+                    作业满分： 100.00 ，共 1道 题
+                    <table><tbody>
+                      <tr><th>1.</th><td>设计说明</td><td>100.00</td><td>未提交答案</td></tr>
+                    </tbody></table>
+                  </body></html>
+                  """
+          )
+        }
+        else -> error("Unexpected request: ${request.method.value} ${request.url}")
+      }
+    }
+    useMockUpstream(engine)
+    val api = JudgeApi()
+    val keys = listOf(JudgeAssignmentDetailKeyDto("1", "101"))
+
+    val first = api.getAssignmentDetails(keys)
+    val second = api.getAssignmentDetails(keys)
+    ConnectionRuntime.resetSession()
+    useMockUpstream(engine)
+    LocalAuthSessionStore.save(
+        LocalAuthSession(
+            username = "22373333",
+            user = UserData(name = "Test User", schoolid = "22373333"),
+            authenticatedAt = "2026-04-20T08:00:00Z",
+            lastActivity = "2026-04-20T08:30:00Z",
+        )
+    )
+    val third = api.getAssignmentDetails(keys)
+
+    assertTrue(first.isSuccess, first.exceptionOrNull()?.message.orEmpty())
+    assertTrue(second.isSuccess, second.exceptionOrNull()?.message.orEmpty())
+    assertTrue(third.isSuccess, third.exceptionOrNull()?.message.orEmpty())
+    assertEquals(listOf("101"), first.getOrNull()?.details?.map { it.assignmentId })
+    assertEquals(2, detailRequests)
+  }
+
+  @Test
+  fun `judge api batch details supports webvpn upstream urls`() = runTest {
+    ConnectionRuntime.switchMode(ConnectionMode.WEBVPN)
+    LocalAuthSessionStore.save(
+        LocalAuthSession(
+            username = "22373333",
+            user = UserData(name = "Test User", schoolid = "22373333"),
+            authenticatedAt = "2026-04-20T08:00:00Z",
+            lastActivity = "2026-04-20T08:30:00Z",
+        )
+    )
+    val requestedHosts = mutableListOf<String>()
+    val engine = MockEngine { request ->
+      requestedHosts += request.url.host
+      when (LocalWebVpnSupport.fromWebVpnUrl(request.url.toString())) {
+        "https://sso.buaa.edu.cn/login?service=http%3A%2F%2Fjudge.buaa.edu.cn%2F" ->
+            respond(
+                content = ByteReadChannel.Empty,
+                status = HttpStatusCode.Found,
+                headers =
+                    headersOf(
+                        HttpHeaders.Location,
+                        LocalWebVpnSupport.toWebVpnUrl("https://judge.buaa.edu.cn/"),
+                    ),
+            )
+        "https://judge.buaa.edu.cn",
+        "https://judge.buaa.edu.cn/" -> respondHtml("<html><body>judge ready</body></html>")
+        "https://judge.buaa.edu.cn/courselist.jsp?courseID=0" ->
+            respondHtml(
+                """<html><body><a href="courselist.jsp?courseID=1">软件工程</a></body></html>"""
+            )
+        "https://judge.buaa.edu.cn/courselist.jsp?courseID=1" ->
+            respondHtml("<html><body>course selected</body></html>")
+        "https://judge.buaa.edu.cn/assignment/index.jsp" ->
+            respondHtml(
+                """<html><body><a href="assignment/index.jsp?assignID=101">设计作业</a></body></html>"""
+            )
+        "https://judge.buaa.edu.cn/assignment/index.jsp?assignID=101" ->
+            respondHtml(
+                """
+                    <html><body>
+                      作业时间：2026-04-20 19:00:00 至 2026-05-03 23:00:00
+                      作业满分： 100.00 ，共 1道 题
+                      <table><tbody>
+                        <tr><th>1.</th><td>设计说明</td><td>100.00</td><td>未提交答案</td></tr>
+                      </tbody></table>
+                    </body></html>
+                    """
+            )
+        else -> error("Unexpected request: ${request.method.value} ${request.url}")
+      }
+    }
+    useMockUpstream(engine, storageMode = ConnectionMode.WEBVPN)
+
+    val result = JudgeApi().getAssignmentDetails(listOf(JudgeAssignmentDetailKeyDto("1", "101")))
+
+    assertTrue(result.isSuccess, result.exceptionOrNull()?.message.orEmpty())
+    assertEquals("101", result.getOrNull()?.details?.single()?.assignmentId)
+    assertTrue(requestedHosts.all { it == "d.buaa.edu.cn" })
+  }
+
   private fun useMockUpstream(
       engine: MockEngine,
       followRedirectsOverride: Boolean? = null,
+      storageMode: ConnectionMode = ConnectionMode.DIRECT,
   ) {
     LocalUpstreamClientProvider.clientFactory = { followRedirects ->
       HttpClient(engine) {
         this.followRedirects = followRedirectsOverride ?: followRedirects
-        install(HttpCookies) { storage = LocalCookieStore.storage(ConnectionMode.DIRECT) }
+        install(HttpCookies) { storage = LocalCookieStore.storage(storageMode) }
       }
     }
     LocalUpstreamClientProvider.isolatedClientFactory = { followRedirects, cookieStorage ->

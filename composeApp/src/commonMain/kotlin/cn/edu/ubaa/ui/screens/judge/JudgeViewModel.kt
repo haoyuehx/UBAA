@@ -4,22 +4,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import cn.edu.ubaa.api.JudgeApi
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailDto
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentSummaryDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentsResponse
 import cn.edu.ubaa.model.dto.JudgeSubmissionStatus
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -57,6 +53,7 @@ class JudgeViewModel(
   private var assignmentsLoadedOnce = false
   private var assignmentLoadVersion = 0
   private var assignmentDetailEnrichmentJob: Job? = null
+  private val assignmentDetailCache = mutableMapOf<String, JudgeAssignmentDetailDto>()
   private val _uiState = MutableStateFlow(JudgeUiState())
   val uiState: StateFlow<JudgeUiState> = _uiState.asStateFlow()
 
@@ -71,7 +68,9 @@ class JudgeViewModel(
     assignmentsLoadedOnce = true
     assignmentLoadVersion++
     val loadVersion = assignmentLoadVersion
+    val includeExpired = _uiState.value.showExpired
     assignmentDetailEnrichmentJob?.cancel()
+    assignmentDetailCache.clear()
     viewModelScope.launch {
       val hasExistingData = _uiState.value.assignmentsResponse != null
       _uiState.value =
@@ -83,7 +82,7 @@ class JudgeViewModel(
           )
 
       judgeApi
-          .getAssignments()
+          .getAssignments(includeExpired = includeExpired)
           .onSuccess { response ->
             val currentState = _uiState.value
             _uiState.value =
@@ -123,7 +122,11 @@ class JudgeViewModel(
   }
 
   fun setShowExpired(enabled: Boolean) {
+    val shouldRefresh = enabled && !_uiState.value.showExpired
     updateVisibleAssignments { copy(showExpired = enabled) }
+    if (shouldRefresh) {
+      loadAssignments(refresh = true)
+    }
   }
 
   fun setShowOnlyUnfinished(enabled: Boolean) {
@@ -131,6 +134,16 @@ class JudgeViewModel(
   }
 
   fun loadAssignmentDetail(courseId: String, assignmentId: String) {
+    assignmentDetailCache[detailCacheKey(courseId, assignmentId)]?.let { cachedDetail ->
+      _uiState.value =
+          _uiState.value.copy(
+              isDetailLoading = false,
+              assignmentDetail = cachedDetail,
+              detailError = null,
+          )
+      return
+    }
+
     viewModelScope.launch {
       _uiState.value =
           _uiState.value.copy(
@@ -142,6 +155,7 @@ class JudgeViewModel(
       judgeApi
           .getAssignmentDetail(courseId, assignmentId)
           .onSuccess { detail ->
+            assignmentDetailCache[detailCacheKey(detail.courseId, detail.assignmentId)] = detail
             _uiState.value =
                 _uiState.value.copy(
                     isDetailLoading = false,
@@ -193,7 +207,7 @@ class JudgeViewModel(
 
     assignmentDetailEnrichmentJob =
         viewModelScope.launch {
-          summaries.enrichDetailsConcurrently(loadVersion)
+          summaries.enrichDetailsInBatches(loadVersion)
 
           if (loadVersion == assignmentLoadVersion) {
             val currentState = _uiState.value
@@ -210,23 +224,40 @@ class JudgeViewModel(
         }
   }
 
-  private suspend fun List<JudgeAssignmentSummaryDto>.enrichDetailsConcurrently(loadVersion: Int) =
-      coroutineScope {
-        val semaphore = Semaphore(JUDGE_DETAIL_ENRICHMENT_CONCURRENCY)
+  private suspend fun List<JudgeAssignmentSummaryDto>.enrichDetailsInBatches(loadVersion: Int) {
+    val keys =
         map { summary ->
-              async {
-                semaphore.withPermit {
-                  if (loadVersion != assignmentLoadVersion) return@withPermit
-                  val detail =
-                      judgeApi
-                          .getAssignmentDetail(summary.courseId, summary.assignmentId)
-                          .getOrNull() ?: return@withPermit
-                  applyEnrichedAssignmentDetail(detail, loadVersion)
-                }
-              }
+              JudgeAssignmentDetailKeyDto(
+                  courseId = summary.courseId,
+                  assignmentId = summary.assignmentId,
+              )
             }
-            .awaitAll()
+            .distinct()
+    for (chunk in keys.chunked(JUDGE_DETAIL_ENRICHMENT_BATCH_SIZE)) {
+      if (loadVersion != assignmentLoadVersion) return
+      val batchResult = judgeApi.getAssignmentDetails(chunk)
+      val details = batchResult.getOrNull()?.details.orEmpty()
+      details.forEach { detail ->
+        assignmentDetailCache[detailCacheKey(detail.courseId, detail.assignmentId)] = detail
+        applyEnrichedAssignmentDetail(detail, loadVersion)
       }
+      val loadedKeys = details.map { detailCacheKey(it.courseId, it.assignmentId) }.toSet()
+      val missingKeys =
+          if (batchResult.isFailure) {
+            chunk
+          } else {
+            chunk.filter { key -> detailCacheKey(key.courseId, key.assignmentId) !in loadedKeys }
+          }
+      missingKeys.forEach { key ->
+        if (loadVersion != assignmentLoadVersion) return
+        val detail =
+            judgeApi.getAssignmentDetail(key.courseId, key.assignmentId).getOrNull()
+                ?: return@forEach
+        assignmentDetailCache[detailCacheKey(detail.courseId, detail.assignmentId)] = detail
+        applyEnrichedAssignmentDetail(detail, loadVersion)
+      }
+    }
+  }
 
   private fun applyEnrichedAssignmentDetail(
       detail: JudgeAssignmentDetailDto,
@@ -338,7 +369,10 @@ class JudgeViewModel(
           submissionStatusText = submissionStatusText,
       )
 
+  private fun detailCacheKey(courseId: String, assignmentId: String): String =
+      "$courseId:$assignmentId"
+
   companion object {
-    private const val JUDGE_DETAIL_ENRICHMENT_CONCURRENCY = 4
+    private const val JUDGE_DETAIL_ENRICHMENT_BATCH_SIZE = 12
   }
 }
