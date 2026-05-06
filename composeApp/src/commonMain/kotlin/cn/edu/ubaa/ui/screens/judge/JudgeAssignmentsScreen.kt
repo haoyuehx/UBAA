@@ -46,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import cn.edu.ubaa.model.dto.JudgeAssignmentSummaryDto
+import cn.edu.ubaa.model.dto.JudgeSubmissionStatus
 
 /** 希冀作业列表页。 */
 @OptIn(ExperimentalMaterialApi::class)
@@ -102,6 +103,14 @@ fun JudgeAssignmentsScreen(
                 Text(text = uiState.error!!, color = MaterialTheme.colorScheme.error)
                 Spacer(modifier = Modifier.height(12.dp))
                 Button(onClick = { viewModel.loadAssignments() }) { Text("重试") }
+              }
+            }
+        groupedAssignments.isEmpty() && uiState.isEnrichingAssignments ->
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+              Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator()
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("正在加载希冀作业详情")
               }
             }
         groupedAssignments.isEmpty() ->
@@ -205,43 +214,43 @@ private fun JudgeAssignmentCard(
             fontWeight = FontWeight.Bold,
             modifier = Modifier.weight(1f),
         )
-        ElevatedAssistChip(
-            onClick = onClick,
-            label = { Text(assignment.submissionStatusText) },
-        )
+        if (assignment.shouldShowJudgeSummaryStatus()) {
+          ElevatedAssistChip(
+              onClick = onClick,
+              label = { Text(assignment.submissionStatusText) },
+          )
+        }
       }
 
-      Spacer(modifier = Modifier.height(8.dp))
+      val infoLines = assignment.judgeSummaryInfoLines()
+      if (infoLines.isNotEmpty()) {
+        Spacer(modifier = Modifier.height(8.dp))
 
-      Text(
-          text = "开始：${assignment.startTime ?: "未知"}",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-      Text(
-          text = "截止：${assignment.dueTime ?: "未知"}",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-
-      if (assignment.totalProblems > 0) {
-        Text(
-            text = "进度：${assignment.submittedCount}/${assignment.totalProblems}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        infoLines.forEach { line ->
+          Text(
+              text = line,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
       }
-
-      assignment.maxScore
-          ?.takeIf { it.isNotBlank() }
-          ?.let { maxScore ->
-            val scoreText = assignment.myScore?.takeIf { it.isNotBlank() } ?: "无"
-            Text(
-                text = "分数：$scoreText / $maxScore",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
     }
   }
+}
+
+internal fun JudgeAssignmentSummaryDto.shouldShowJudgeSummaryStatus(): Boolean =
+    submissionStatus != JudgeSubmissionStatus.UNKNOWN && submissionStatusText.isNotBlank()
+
+internal fun JudgeAssignmentSummaryDto.judgeSummaryInfoLines(): List<String> = buildList {
+  startTime?.takeIf { it.isNotBlank() }?.let { add("开始：$it") }
+  dueTime?.takeIf { it.isNotBlank() }?.let { add("截止：$it") }
+  if (totalProblems > 0) {
+    add("进度：$submittedCount/$totalProblems")
+  }
+  maxScore
+      ?.takeIf { it.isNotBlank() }
+      ?.let { maxScore ->
+        val scoreText = myScore?.takeIf { it.isNotBlank() } ?: "无"
+        add("分数：$scoreText / $maxScore")
+      }
 }

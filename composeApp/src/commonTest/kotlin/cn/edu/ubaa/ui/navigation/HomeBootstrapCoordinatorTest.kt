@@ -27,7 +27,6 @@ class HomeBootstrapCoordinatorTest {
             "schedule:false@0",
             "signin:false@0",
             "spoc:false@0",
-            "judge:false@0",
             "bykc:false@0",
             "cgyy:false@0",
         ),
@@ -50,7 +49,6 @@ class HomeBootstrapCoordinatorTest {
             "schedule:true@0",
             "signin:true@0",
             "spoc:true@0",
-            "judge:true@0",
             "bykc:true@0",
             "cgyy:true@0",
         ),
@@ -85,7 +83,6 @@ class HomeBootstrapCoordinatorTest {
             loadTodaySchedule = { throw IllegalStateException("boom") },
             loadSignin = {},
             loadSpoc = {},
-            loadJudge = {},
             loadBykc = {},
             loadCgyy = {},
         )
@@ -106,7 +103,6 @@ class HomeBootstrapCoordinatorTest {
         loadTodaySchedule = { force -> events += "schedule:$force@${currentTime()}" },
         loadSignin = { force -> events += "signin:$force@${currentTime()}" },
         loadSpoc = { force -> events += "spoc:$force@${currentTime()}" },
-        loadJudge = { force -> events += "judge:$force@${currentTime()}" },
         loadBykc = { force -> events += "bykc:$force@${currentTime()}" },
         loadCgyy = { force -> events += "cgyy:$force@${currentTime()}" },
     )

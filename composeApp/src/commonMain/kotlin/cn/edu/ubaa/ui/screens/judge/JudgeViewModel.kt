@@ -9,10 +9,17 @@ import cn.edu.ubaa.model.dto.JudgeAssignmentsResponse
 import cn.edu.ubaa.model.dto.JudgeSubmissionStatus
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -28,6 +35,7 @@ data class JudgeUiState(
     val assignmentsResponse: JudgeAssignmentsResponse? = null,
     val visibleAssignments: List<JudgeAssignmentSummaryDto> = emptyList(),
     val error: String? = null,
+    val isEnrichingAssignments: Boolean = false,
     val isDetailLoading: Boolean = false,
     val assignmentDetail: JudgeAssignmentDetailDto? = null,
     val detailError: String? = null,
@@ -35,7 +43,7 @@ data class JudgeUiState(
     val sortField: JudgeSortField = JudgeSortField.DUE_TIME,
     val sortAscending: Boolean = true,
     val showExpired: Boolean = false,
-    val showOnlyUnfinished: Boolean = false,
+    val showOnlyUnfinished: Boolean = true,
 )
 
 /** 希冀作业查询模块 ViewModel。 */
@@ -47,6 +55,8 @@ class JudgeViewModel(
     },
 ) : ViewModel() {
   private var assignmentsLoadedOnce = false
+  private var assignmentLoadVersion = 0
+  private var assignmentDetailEnrichmentJob: Job? = null
   private val _uiState = MutableStateFlow(JudgeUiState())
   val uiState: StateFlow<JudgeUiState> = _uiState.asStateFlow()
 
@@ -59,12 +69,16 @@ class JudgeViewModel(
 
   fun loadAssignments(refresh: Boolean = false) {
     assignmentsLoadedOnce = true
+    assignmentLoadVersion++
+    val loadVersion = assignmentLoadVersion
+    assignmentDetailEnrichmentJob?.cancel()
     viewModelScope.launch {
       val hasExistingData = _uiState.value.assignmentsResponse != null
       _uiState.value =
           _uiState.value.copy(
               isLoading = !refresh || !hasExistingData,
               isRefreshing = refresh,
+              isEnrichingAssignments = false,
               error = null,
           )
 
@@ -76,17 +90,20 @@ class JudgeViewModel(
                 currentState.copy(
                     isLoading = false,
                     isRefreshing = false,
+                    isEnrichingAssignments = response.assignments.isNotEmpty(),
                     assignmentsResponse = response,
                     visibleAssignments =
                         buildVisibleAssignments(response.assignments, currentState),
                     error = null,
                 )
+            startAssignmentDetailEnrichment(response.assignments, loadVersion)
           }
           .onFailure { exception ->
             _uiState.value =
                 _uiState.value.copy(
                     isLoading = false,
                     isRefreshing = false,
+                    isEnrichingAssignments = false,
                     error = exception.message ?: "加载希冀作业失败",
                 )
           }
@@ -164,6 +181,79 @@ class JudgeViewModel(
         )
   }
 
+  private fun startAssignmentDetailEnrichment(
+      summaries: List<JudgeAssignmentSummaryDto>,
+      loadVersion: Int,
+  ) {
+    assignmentDetailEnrichmentJob?.cancel()
+    if (summaries.isEmpty()) {
+      _uiState.value = _uiState.value.copy(isEnrichingAssignments = false)
+      return
+    }
+
+    assignmentDetailEnrichmentJob =
+        viewModelScope.launch {
+          summaries.enrichDetailsConcurrently(loadVersion)
+
+          if (loadVersion == assignmentLoadVersion) {
+            val currentState = _uiState.value
+            _uiState.value =
+                currentState.copy(
+                    isEnrichingAssignments = false,
+                    visibleAssignments =
+                        buildVisibleAssignments(
+                            currentState.assignmentsResponse?.assignments.orEmpty(),
+                            currentState,
+                        ),
+                )
+          }
+        }
+  }
+
+  private suspend fun List<JudgeAssignmentSummaryDto>.enrichDetailsConcurrently(loadVersion: Int) =
+      coroutineScope {
+        val semaphore = Semaphore(JUDGE_DETAIL_ENRICHMENT_CONCURRENCY)
+        map { summary ->
+              async {
+                semaphore.withPermit {
+                  if (loadVersion != assignmentLoadVersion) return@withPermit
+                  val detail =
+                      judgeApi
+                          .getAssignmentDetail(summary.courseId, summary.assignmentId)
+                          .getOrNull() ?: return@withPermit
+                  applyEnrichedAssignmentDetail(detail, loadVersion)
+                }
+              }
+            }
+            .awaitAll()
+      }
+
+  private fun applyEnrichedAssignmentDetail(
+      detail: JudgeAssignmentDetailDto,
+      loadVersion: Int,
+  ) {
+    if (loadVersion != assignmentLoadVersion) return
+    _uiState.update { currentState ->
+      val currentAssignments = currentState.assignmentsResponse?.assignments.orEmpty()
+      val updatedAssignments =
+          currentAssignments.map { assignment ->
+            if (
+                assignment.courseId == detail.courseId &&
+                    assignment.assignmentId == detail.assignmentId
+            ) {
+              detail.toSummary()
+            } else {
+              assignment
+            }
+          }
+      val response = JudgeAssignmentsResponse(updatedAssignments)
+      currentState.copy(
+          assignmentsResponse = response,
+          visibleAssignments = buildVisibleAssignments(response.assignments, currentState),
+      )
+    }
+  }
+
   private fun buildVisibleAssignments(
       assignments: List<JudgeAssignmentSummaryDto>,
       state: JudgeUiState,
@@ -231,4 +321,24 @@ class JudgeViewModel(
   private fun JudgeAssignmentSummaryDto.isUnfinished(): Boolean =
       submissionStatus == JudgeSubmissionStatus.UNSUBMITTED ||
           submissionStatus == JudgeSubmissionStatus.PARTIAL
+
+  private fun JudgeAssignmentDetailDto.toSummary(): JudgeAssignmentSummaryDto =
+      JudgeAssignmentSummaryDto(
+          courseId = courseId,
+          courseName = courseName,
+          assignmentId = assignmentId,
+          title = title,
+          startTime = startTime,
+          dueTime = dueTime,
+          maxScore = maxScore,
+          myScore = myScore,
+          totalProblems = totalProblems,
+          submittedCount = submittedCount,
+          submissionStatus = submissionStatus,
+          submissionStatusText = submissionStatusText,
+      )
+
+  companion object {
+    private const val JUDGE_DETAIL_ENRICHMENT_CONCURRENCY = 4
+  }
 }

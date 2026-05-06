@@ -123,6 +123,11 @@ fun JudgeAssignmentDetailScreen(
             )
 
             DetailInfoCard(
+                title = "作业内容",
+                lines = listOf(detail.contentPlainText ?: "暂无作业说明"),
+            )
+
+            DetailInfoCard(
                 title = "题目明细",
                 lines = if (detail.problems.isEmpty()) listOf("暂无题目明细") else emptyList(),
             )

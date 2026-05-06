@@ -33,7 +33,8 @@ class JudgeViewModelTest {
   @Test
   fun `load assignments success updates ui state`() = runTest {
     setMainDispatcher(testScheduler)
-    val viewModel = createViewModel(apiWithAssignments())
+    val api = apiWithAssignments()
+    val viewModel = createViewModel(api)
 
     viewModel.ensureAssignmentsLoaded()
     advanceUntilIdle()
@@ -41,7 +42,16 @@ class JudgeViewModelTest {
     val state = viewModel.uiState.value
     assertNull(state.error)
     assertEquals(3, state.assignmentsResponse?.assignments?.size)
+    assertTrue(state.showOnlyUnfinished)
     assertEquals(listOf("101", "102"), state.visibleAssignments.map { it.assignmentId })
+    assertEquals(
+        listOf("1:101", "2:102", "3:103"),
+        api.detailRequests,
+    )
+    assertEquals(
+        listOf("2026-05-03 23:00:00", "2026-05-10 23:00:00"),
+        state.visibleAssignments.map { it.dueTime },
+    )
   }
 
   @Test
@@ -93,6 +103,7 @@ class JudgeViewModelTest {
 
     viewModel.ensureAssignmentsLoaded()
     advanceUntilIdle()
+    viewModel.setShowOnlyUnfinished(false)
     viewModel.setShowExpired(true)
 
     assertEquals(
@@ -140,98 +151,142 @@ class JudgeViewModelTest {
     Dispatchers.setMain(StandardTestDispatcher(testScheduler))
   }
 
-  private fun apiWithAssignments(): JudgeApi =
-      object : JudgeApi() {
-        override suspend fun getAssignments(): Result<JudgeAssignmentsResponse> {
-          return Result.success(
-              JudgeAssignmentsResponse(
-                  assignments =
-                      listOf(
-                          JudgeAssignmentSummaryDto(
-                              courseId = "1",
-                              courseName = "软件工程",
-                              assignmentId = "101",
-                              title = "设计作业",
-                              startTime = "2026-04-20 19:00:00",
-                              dueTime = "2026-05-03 23:00:00",
-                              maxScore = "100",
-                              myScore = "60",
-                              totalProblems = 2,
-                              submittedCount = 1,
-                              submissionStatus = JudgeSubmissionStatus.PARTIAL,
-                              submissionStatusText = "进行中(1/2)",
-                          ),
-                          JudgeAssignmentSummaryDto(
-                              courseId = "2",
-                              courseName = "算法设计",
-                              assignmentId = "102",
-                              title = "编程作业",
-                              startTime = "2026-04-15 08:00:00",
-                              dueTime = "2026-05-10 23:00:00",
-                              maxScore = "20",
-                              myScore = null,
-                              totalProblems = 1,
-                              submittedCount = 0,
-                              submissionStatus = JudgeSubmissionStatus.UNSUBMITTED,
-                              submissionStatusText = "未提交",
-                          ),
-                          JudgeAssignmentSummaryDto(
-                              courseId = "3",
-                              courseName = "数据库",
-                              assignmentId = "103",
-                              title = "已截止作业",
-                              startTime = "2026-04-01 08:00:00",
-                              dueTime = "2026-04-10 23:00:00",
-                              maxScore = "10",
-                              myScore = "10",
-                              totalProblems = 1,
-                              submittedCount = 1,
-                              submissionStatus = JudgeSubmissionStatus.SUBMITTED,
-                              submissionStatusText = "已完成 10/10",
-                          ),
-                      )
-              )
-          )
-        }
-      }
+  private fun apiWithAssignments(): RecordingJudgeApi = RecordingJudgeApi()
 
-  private fun apiWithAssignmentsAndDetail(): JudgeApi =
-      object : JudgeApi() {
-        override suspend fun getAssignments(): Result<JudgeAssignmentsResponse> =
-            apiWithAssignments().getAssignments()
+  private inner class RecordingJudgeApi : JudgeApi() {
+    val detailRequests = mutableListOf<String>()
 
-        override suspend fun getAssignmentDetail(
-            courseId: String,
-            assignmentId: String,
-        ): Result<JudgeAssignmentDetailDto> {
-          return Result.success(
-              JudgeAssignmentDetailDto(
-                  courseId = courseId,
-                  courseName = "软件工程",
-                  assignmentId = assignmentId,
-                  title = "设计作业",
-                  startTime = "2026-04-20 19:00:00",
-                  dueTime = "2026-05-03 23:00:00",
-                  maxScore = "100",
-                  myScore = "60",
-                  totalProblems = 2,
-                  submittedCount = 1,
-                  submissionStatus = JudgeSubmissionStatus.PARTIAL,
-                  submissionStatusText = "进行中(1/2)",
-                  problems =
-                      listOf(
-                          JudgeProblemDto(
-                              name = "设计说明",
-                              score = "60",
-                              maxScore = "60",
-                              status = JudgeSubmissionStatus.SUBMITTED,
-                              statusText = "已提交",
-                          )
+    override suspend fun getAssignments(): Result<JudgeAssignmentsResponse> {
+      return Result.success(
+          JudgeAssignmentsResponse(
+              assignments =
+                  listOf(
+                      JudgeAssignmentSummaryDto(
+                          courseId = "1",
+                          courseName = "软件工程",
+                          assignmentId = "101",
+                          title = "设计作业",
+                          submissionStatus = JudgeSubmissionStatus.UNKNOWN,
+                          submissionStatusText = "未知状态",
                       ),
-              )
+                      JudgeAssignmentSummaryDto(
+                          courseId = "2",
+                          courseName = "算法设计",
+                          assignmentId = "102",
+                          title = "编程作业",
+                          submissionStatus = JudgeSubmissionStatus.UNKNOWN,
+                          submissionStatusText = "未知状态",
+                      ),
+                      JudgeAssignmentSummaryDto(
+                          courseId = "3",
+                          courseName = "数据库",
+                          assignmentId = "103",
+                          title = "已截止作业",
+                          submissionStatus = JudgeSubmissionStatus.UNKNOWN,
+                          submissionStatusText = "未知状态",
+                      ),
+                  )
           )
-        }
-      }
+      )
+    }
+
+    override suspend fun getAssignmentDetail(
+        courseId: String,
+        assignmentId: String,
+    ): Result<JudgeAssignmentDetailDto> {
+      detailRequests += "$courseId:$assignmentId"
+      return Result.success(
+          when (assignmentId) {
+            "101" ->
+                detail(
+                    courseId = courseId,
+                    courseName = "软件工程",
+                    assignmentId = assignmentId,
+                    title = "设计作业",
+                    startTime = "2026-04-20 19:00:00",
+                    dueTime = "2026-05-03 23:00:00",
+                    maxScore = "100",
+                    myScore = "60",
+                    totalProblems = 2,
+                    submittedCount = 1,
+                    submissionStatus = JudgeSubmissionStatus.PARTIAL,
+                    submissionStatusText = "进行中(1/2)",
+                )
+            "102" ->
+                detail(
+                    courseId = courseId,
+                    courseName = "算法设计",
+                    assignmentId = assignmentId,
+                    title = "编程作业",
+                    startTime = "2026-04-15 08:00:00",
+                    dueTime = "2026-05-10 23:00:00",
+                    maxScore = "20",
+                    myScore = null,
+                    totalProblems = 1,
+                    submittedCount = 0,
+                    submissionStatus = JudgeSubmissionStatus.UNSUBMITTED,
+                    submissionStatusText = "未提交",
+                )
+            else ->
+                detail(
+                    courseId = courseId,
+                    courseName = "数据库",
+                    assignmentId = assignmentId,
+                    title = "已截止作业",
+                    startTime = "2026-04-01 08:00:00",
+                    dueTime = "2026-04-10 23:00:00",
+                    maxScore = "10",
+                    myScore = "10",
+                    totalProblems = 1,
+                    submittedCount = 1,
+                    submissionStatus = JudgeSubmissionStatus.SUBMITTED,
+                    submissionStatusText = "已完成 10/10",
+                )
+          }
+      )
+    }
+  }
+
+  private fun apiWithAssignmentsAndDetail(): JudgeApi = RecordingJudgeApi()
+
+  private fun detail(
+      courseId: String,
+      courseName: String,
+      assignmentId: String,
+      title: String,
+      startTime: String,
+      dueTime: String,
+      maxScore: String,
+      myScore: String?,
+      totalProblems: Int,
+      submittedCount: Int,
+      submissionStatus: JudgeSubmissionStatus,
+      submissionStatusText: String,
+  ): JudgeAssignmentDetailDto =
+      JudgeAssignmentDetailDto(
+          courseId = courseId,
+          courseName = courseName,
+          assignmentId = assignmentId,
+          title = title,
+          startTime = startTime,
+          dueTime = dueTime,
+          maxScore = maxScore,
+          myScore = myScore,
+          totalProblems = totalProblems,
+          submittedCount = submittedCount,
+          submissionStatus = submissionStatus,
+          submissionStatusText = submissionStatusText,
+          problems =
+              listOf(
+                  JudgeProblemDto(
+                      name = "设计说明",
+                      score = myScore,
+                      maxScore = maxScore,
+                      status = submissionStatus,
+                      statusText = submissionStatusText,
+                  )
+              ),
+      )
 
   companion object {
     private val FIXED_NOW = LocalDateTime.parse("2026-05-01T12:00:00")

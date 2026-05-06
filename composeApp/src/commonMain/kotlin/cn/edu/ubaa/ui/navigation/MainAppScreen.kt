@@ -279,7 +279,6 @@ fun MainAppScreen(
             !scheduleViewModel.hasTodayLoaded() ||
             !signinViewModel.hasTodayLoaded() ||
             !spocViewModel.hasAssignmentsLoaded() ||
-            !judgeViewModel.hasAssignmentsLoaded() ||
             !bykcViewModel.hasChosenCoursesLoaded() ||
             cgyyViewModel?.hasOrdersLoaded() != true
     homeBootstrapCoordinator.restart(
@@ -289,7 +288,6 @@ fun MainAppScreen(
             },
             loadSignin = { force -> signinViewModel.ensureTodayLoaded(forceRefresh = force) },
             loadSpoc = { force -> spocViewModel.ensureAssignmentsLoaded(forceRefresh = force) },
-            loadJudge = { force -> judgeViewModel.ensureAssignmentsLoaded(forceRefresh = force) },
             loadBykc = { force -> bykcViewModel.ensureChosenCoursesLoaded(forceRefresh = force) },
             loadCgyy = { force -> cgyyViewModel?.ensureOrdersLoaded(forceRefresh = force) },
         ),
