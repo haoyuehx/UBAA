@@ -1,5 +1,17 @@
 package cn.edu.ubaa.api
 
+import cn.edu.ubaa.api.auth.ApiCallException
+import cn.edu.ubaa.api.core.DefaultApiFactory
+import cn.edu.ubaa.api.feature.CgyyApi
+import cn.edu.ubaa.api.local.LocalAuthSession
+import cn.edu.ubaa.api.local.LocalAuthSessionStore
+import cn.edu.ubaa.api.local.LocalCgyyApiBackend
+import cn.edu.ubaa.api.local.LocalCgyyCaptchaChallenge
+import cn.edu.ubaa.api.local.LocalCgyyCaptchaSolver
+import cn.edu.ubaa.api.local.LocalCgyySolvedCaptcha
+import cn.edu.ubaa.api.local.LocalCookieStore
+import cn.edu.ubaa.api.local.LocalScheduleApiBackend
+import cn.edu.ubaa.api.local.LocalUpstreamClientProvider
 import cn.edu.ubaa.model.dto.CgyyReservationSelectionDto
 import cn.edu.ubaa.model.dto.CgyyReservationSubmitRequest
 import cn.edu.ubaa.model.dto.UserData

@@ -1,5 +1,12 @@
 package cn.edu.ubaa.api
 
+import cn.edu.ubaa.api.core.DefaultApiFactory
+import cn.edu.ubaa.api.feature.GradeApi
+import cn.edu.ubaa.api.feature.ScheduleApi
+import cn.edu.ubaa.api.local.LocalAuthSession
+import cn.edu.ubaa.api.local.LocalAuthSessionStore
+import cn.edu.ubaa.api.local.LocalCookieStore
+import cn.edu.ubaa.api.local.LocalUpstreamClientProvider
 import cn.edu.ubaa.model.dto.Exam
 import cn.edu.ubaa.model.dto.ExamResponse
 import cn.edu.ubaa.model.dto.Term
@@ -22,7 +29,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 class LocalScheduleApiBackendTest {
@@ -39,7 +45,7 @@ class LocalScheduleApiBackendTest {
     ConnectionRuntime.resolveSelectedMode()
     ConnectionRuntime.apiFactoryProvider = { DefaultApiFactory }
     LocalAuthSessionStore.save(
-        cn.edu.ubaa.api.LocalAuthSession(
+        LocalAuthSession(
             username = "22373333",
             user = UserData(name = "Test User", schoolid = "22373333"),
             authenticatedAt = "2026-04-20T08:00:00Z",

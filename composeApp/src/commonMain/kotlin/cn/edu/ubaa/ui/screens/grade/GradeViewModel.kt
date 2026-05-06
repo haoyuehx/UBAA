@@ -2,7 +2,7 @@ package cn.edu.ubaa.ui.screens.grade
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import cn.edu.ubaa.api.GradeApi
+import cn.edu.ubaa.api.feature.GradeApi
 import cn.edu.ubaa.model.dto.GradeData
 import cn.edu.ubaa.model.dto.Term
 import cn.edu.ubaa.repository.GlobalTermRepository

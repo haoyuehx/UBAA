@@ -2,7 +2,7 @@ package cn.edu.ubaa.ui.screens.judge
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import cn.edu.ubaa.api.JudgeApi
+import cn.edu.ubaa.api.feature.JudgeApi
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentSummaryDto

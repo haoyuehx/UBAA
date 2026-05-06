@@ -15,7 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import cn.edu.ubaa.api.BykcCourseFilterStore
+import cn.edu.ubaa.api.storage.BykcCourseFilterStore
 import cn.edu.ubaa.api.ConnectionMode
 import cn.edu.ubaa.model.dto.BykcCourseDto
 import cn.edu.ubaa.model.dto.CourseClass

@@ -1,6 +1,7 @@
-package cn.edu.ubaa.api
+package cn.edu.ubaa.api.plantform
 
 import android.graphics.BitmapFactory
+import cn.edu.ubaa.api.plantform.LocalCgyyImageData
 
 internal actual object PlatformImageRasterDecoder {
   actual fun decode(input: ByteArray): LocalCgyyImageData {

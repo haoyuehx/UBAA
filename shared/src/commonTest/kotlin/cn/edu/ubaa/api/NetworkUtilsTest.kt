@@ -1,5 +1,6 @@
 package cn.edu.ubaa.api
 
+import cn.edu.ubaa.api.auth.userFacingMessageForCode
 import io.ktor.http.HttpStatusCode
 import kotlin.test.Test
 import kotlin.test.assertEquals

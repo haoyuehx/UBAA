@@ -1,6 +1,6 @@
 package cn.edu.ubaa.ui
 
-import cn.edu.ubaa.api.JudgeApi
+import cn.edu.ubaa.api.feature.JudgeApi
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailsResponse

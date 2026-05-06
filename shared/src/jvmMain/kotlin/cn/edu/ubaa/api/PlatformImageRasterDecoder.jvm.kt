@@ -1,5 +1,6 @@
-package cn.edu.ubaa.api
+package cn.edu.ubaa.api.plantform
 
+import cn.edu.ubaa.api.plantform.LocalCgyyImageData
 import java.io.ByteArrayInputStream
 import javax.imageio.ImageIO
 

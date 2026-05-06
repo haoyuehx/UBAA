@@ -1,5 +1,13 @@
 package cn.edu.ubaa.api
 
+import cn.edu.ubaa.api.feature.JudgeApi
+import cn.edu.ubaa.api.local.LocalAuthServiceBackend
+import cn.edu.ubaa.api.local.LocalAuthSessionStore
+import cn.edu.ubaa.api.local.LocalCookieStore
+import cn.edu.ubaa.api.local.LocalJudgeApiCache
+import cn.edu.ubaa.api.local.LocalUpstreamClientProvider
+import cn.edu.ubaa.api.local.localUpstreamUrl
+import cn.edu.ubaa.api.storage.CredentialStore
 import cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto
 import com.russhwolf.settings.MapSettings
 import io.ktor.client.request.get
