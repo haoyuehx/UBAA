@@ -29,6 +29,7 @@ class LocalJudgeApiBackendTest {
     ConnectionModeStore.settings = MapSettings()
     LocalAuthSessionStore.settings = MapSettings()
     LocalCookieStore.settings = MapSettings()
+    LocalJudgeHistoricalCourseStore.settings = MapSettings()
     ConnectionRuntime.clearSelectedMode()
     ConnectionModeStore.save(ConnectionMode.DIRECT)
     ConnectionRuntime.resolveSelectedMode()
@@ -179,7 +180,90 @@ class LocalJudgeApiBackendTest {
     assertTrue(
         requestedUrls.contains("https://judge.buaa.edu.cn/assignment/index.jsp?assignID=103")
     )
+    assertEquals(listOf("1"), result.getOrNull()?.historicalCutoffCourseIds)
   }
+
+  @Test
+  fun `judge api records cutoff courses locally and skips them on later default refresh`() =
+      runTest {
+        val requestedUrls = mutableListOf<String>()
+        val engine = MockEngine { request ->
+          requestedUrls += request.url.toString()
+          when (request.url.toString()) {
+            "https://sso.buaa.edu.cn/login?service=http%3A%2F%2Fjudge.buaa.edu.cn%2F" ->
+                respond(
+                    content = ByteReadChannel.Empty,
+                    status = HttpStatusCode.Found,
+                    headers = headersOf(HttpHeaders.Location, "https://judge.buaa.edu.cn/"),
+                )
+            "https://judge.buaa.edu.cn/" -> respondHtml("<html><body>judge ready</body></html>")
+            "https://judge.buaa.edu.cn/courselist.jsp?courseID=0" ->
+                respondHtml(
+                    """<html><body><a href="courselist.jsp?courseID=1">软件工程</a></body></html>"""
+                )
+            "https://judge.buaa.edu.cn/courselist.jsp?courseID=1" ->
+                respondHtml("<html><body>course selected</body></html>")
+            "https://judge.buaa.edu.cn/assignment/index.jsp" ->
+                respondHtml(
+                    """
+                    <html><body>
+                      <a href="assignment/index.jsp?assignID=101">设计作业</a>
+                      <a href="assignment/index.jsp?assignID=103">历史作业</a>
+                    </body></html>
+                    """
+                )
+            "https://judge.buaa.edu.cn/assignment/index.jsp?assignID=101" ->
+                respondHtml(
+                    """
+                    <html><body>
+                      作业时间：2026-04-20 19:00:00 至 2026-05-03 23:00:00
+                      作业满分： 100.00 ，共 1道 题
+                      <table><tbody>
+                        <tr><th>1.</th><td>设计说明</td><td>100.00</td><td>未提交答案</td></tr>
+                      </tbody></table>
+                    </body></html>
+                    """
+                )
+            "https://judge.buaa.edu.cn/assignment/index.jsp?assignID=103" ->
+                respondHtml(
+                    """
+                    <html><body>
+                      作业时间：2025-10-30 08:00:00 至 2025-11-10 23:00:00
+                      作业满分： 10.00 ，共 1道 题 总分：10.00
+                      <table><tbody>
+                        <tr><th>1.</th><td>历史题</td><td>10.00</td><td>最后一次提交时间：2025-11-01 12:00:00 得分：10.00</td></tr>
+                      </tbody></table>
+                    </body></html>
+                    """
+                )
+            else -> error("Unexpected request: ${request.method.value} ${request.url}")
+          }
+        }
+        useMockUpstream(engine)
+        val api =
+            JudgeApi(
+                LocalJudgeApiBackend(nowProvider = { LocalDateTime.parse("2026-05-01T12:00:00") })
+            )
+
+        val first = api.getAssignments()
+        LocalJudgeApiCache.clearAll()
+        requestedUrls.clear()
+        val second = api.getAssignments()
+        val defaultRefreshCourseSelectionRequests =
+            requestedUrls.count { it == "https://judge.buaa.edu.cn/courselist.jsp?courseID=1" }
+        val includeExpired = api.getAssignments(includeExpired = true)
+
+        assertTrue(first.isSuccess, first.exceptionOrNull()?.message.orEmpty())
+        assertTrue(second.isSuccess, second.exceptionOrNull()?.message.orEmpty())
+        assertTrue(includeExpired.isSuccess, includeExpired.exceptionOrNull()?.message.orEmpty())
+        assertEquals(listOf("101"), first.getOrNull()?.assignments?.map { it.assignmentId })
+        assertEquals(emptyList(), second.getOrNull()?.assignments)
+        assertEquals(0, defaultRefreshCourseSelectionRequests)
+        assertEquals(
+            listOf("103", "101"),
+            includeExpired.getOrNull()?.assignments?.map { it.assignmentId },
+        )
+      }
 
   @Test
   fun `judge api activates direct judge cas session before fetching assignments`() = runTest {

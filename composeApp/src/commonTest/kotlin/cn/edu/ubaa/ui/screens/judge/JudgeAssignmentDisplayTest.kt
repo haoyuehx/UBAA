@@ -1,6 +1,8 @@
 package cn.edu.ubaa.ui.screens.judge
 
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentSummaryDto
+import cn.edu.ubaa.model.dto.JudgeProblemDto
 import cn.edu.ubaa.model.dto.JudgeSubmissionStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -66,6 +68,41 @@ class JudgeAssignmentDisplayTest {
         ),
         assignment.judgeSummaryInfoLines(),
     )
+  }
+
+  @Test
+  fun `detail sections omit assignment content and keep problem section`() {
+    val detail =
+        JudgeAssignmentDetailDto(
+            courseId = "1",
+            courseName = "软件工程",
+            assignmentId = "101",
+            title = "设计作业",
+            startTime = "2026-04-20 19:00:00",
+            dueTime = "2026-05-03 23:00:00",
+            maxScore = "100",
+            myScore = "60",
+            totalProblems = 1,
+            submittedCount = 1,
+            submissionStatus = JudgeSubmissionStatus.SUBMITTED,
+            submissionStatusText = "已完成 60/100",
+            problems =
+                listOf(
+                    JudgeProblemDto(
+                        name = "设计说明",
+                        score = "60",
+                        maxScore = "100",
+                        status = JudgeSubmissionStatus.SUBMITTED,
+                        statusText = "已提交",
+                    )
+                ),
+            contentPlainText = "这段作业说明不应该在详情页展示",
+        )
+
+    val sections = detail.judgeDetailInfoSections()
+
+    assertEquals(listOf("提交信息", "题目明细"), sections.map { it.title })
+    assertTrue(sections.flatMap { it.lines }.none { it.contains("作业说明") })
   }
 
   private fun assignment(

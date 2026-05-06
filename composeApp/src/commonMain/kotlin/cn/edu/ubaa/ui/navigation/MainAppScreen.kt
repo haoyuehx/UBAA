@@ -202,7 +202,7 @@ fun MainAppScreen(
       viewModel(key = "spoc-${userData.schoolid}") { SpocViewModel() }
   val spocUiState by spocViewModel.uiState.collectAsState()
   val judgeViewModel: JudgeViewModel =
-      viewModel(key = "judge-${userData.schoolid}") { JudgeViewModel() }
+      viewModel(key = "judge-${userData.schoolid}") { JudgeViewModel(userKey = userData.schoolid) }
   val judgeUiState by judgeViewModel.uiState.collectAsState()
   val bykcViewModel: BykcViewModel =
       viewModel(key = "bykc-${userData.schoolid}") { BykcViewModel() }

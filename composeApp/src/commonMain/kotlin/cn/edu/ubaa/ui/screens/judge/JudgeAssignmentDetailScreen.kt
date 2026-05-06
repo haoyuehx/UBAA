@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import cn.edu.ubaa.model.dto.JudgeAssignmentDetailDto
 import cn.edu.ubaa.model.dto.JudgeProblemDto
 
 /** 希冀作业详情页。 */
@@ -103,40 +104,49 @@ fun JudgeAssignmentDetailScreen(
               }
             }
 
-            DetailInfoCard(
-                title = "提交信息",
-                lines =
-                    buildList {
-                      add("状态：${detail.submissionStatusText}")
-                      add("开始时间：${detail.startTime ?: "未知"}")
-                      add("截止时间：${detail.dueTime ?: "未知"}")
-                      if (detail.totalProblems > 0) {
-                        add("进度：${detail.submittedCount}/${detail.totalProblems}")
-                      }
-                      detail.maxScore
-                          ?.takeIf { it.isNotBlank() }
-                          ?.let { maxScore ->
-                            val scoreText = detail.myScore?.takeIf { it.isNotBlank() } ?: "无"
-                            add("分数：$scoreText / $maxScore")
-                          }
-                    },
-            )
-
-            DetailInfoCard(
-                title = "作业内容",
-                lines = listOf(detail.contentPlainText ?: "暂无作业说明"),
-            )
-
-            DetailInfoCard(
-                title = "题目明细",
-                lines = if (detail.problems.isEmpty()) listOf("暂无题目明细") else emptyList(),
-            )
+            detail.judgeDetailInfoSections().forEach { section ->
+              DetailInfoCard(
+                  title = section.title,
+                  lines = section.lines,
+              )
+            }
 
             detail.problems.forEach { problem -> JudgeProblemCard(problem) }
           }
     }
   }
 }
+
+internal data class JudgeDetailInfoSection(
+    val title: String,
+    val lines: List<String>,
+)
+
+internal fun JudgeAssignmentDetailDto.judgeDetailInfoSections(): List<JudgeDetailInfoSection> =
+    listOf(
+        JudgeDetailInfoSection(
+            title = "提交信息",
+            lines =
+                buildList {
+                  add("状态：$submissionStatusText")
+                  add("开始时间：${startTime ?: "未知"}")
+                  add("截止时间：${dueTime ?: "未知"}")
+                  if (totalProblems > 0) {
+                    add("进度：$submittedCount/$totalProblems")
+                  }
+                  maxScore
+                      ?.takeIf { it.isNotBlank() }
+                      ?.let { maxScore ->
+                        val scoreText = myScore?.takeIf { it.isNotBlank() } ?: "无"
+                        add("分数：$scoreText / $maxScore")
+                      }
+                },
+        ),
+        JudgeDetailInfoSection(
+            title = "题目明细",
+            lines = if (problems.isEmpty()) listOf("暂无题目明细") else emptyList(),
+        ),
+    )
 
 @Composable
 private fun DetailInfoCard(title: String, lines: List<String>) {

@@ -58,6 +58,7 @@ class JudgeServiceTest {
             "104" !in fakeClient.detailRequestIds,
             "expected course traversal to stop before assignments after the old sentinel",
         )
+        assertEquals(listOf("1"), response.historicalCutoffCourseIds)
       }
 
   @Test
@@ -77,6 +78,28 @@ class JudgeServiceTest {
             response.assignments.map { it.assignmentId },
         )
         assertTrue("104" in fakeClient.detailRequestIds)
+      }
+
+  @Test
+  fun `get assignments skips client provided courses without fetching their assignments`() =
+      runBlocking {
+        val fakeClient = FakeJudgeClient(oldAssignmentFixture = true)
+        val service =
+            JudgeService(
+                clientProvider = { fakeClient },
+                nowProvider = { LocalDateTime.parse("2026-05-01T12:00:00") },
+            )
+
+        val response =
+            service.getAssignments(
+                username = "24182104",
+                includeExpired = false,
+                skippedCourseIds = setOf("1"),
+            )
+
+        assertEquals(listOf("102"), response.assignments.map { it.assignmentId })
+        assertEquals(listOf("2"), fakeClient.assignmentRequestCourseIds)
+        assertEquals(listOf("102"), fakeClient.detailRequestIds)
       }
 
   @Test
@@ -192,6 +215,7 @@ class JudgeServiceTest {
     var courseCalls = 0
     var assignmentCalls = 0
     var detailCalls = 0
+    val assignmentRequestCourseIds = mutableListOf<String>()
     val detailRequestIds = mutableListOf<String>()
     var closeCalls = 0
     var maxActiveCalls = 0
@@ -213,6 +237,7 @@ class JudgeServiceTest {
     override suspend fun getAssignments(course: JudgeCourseRaw): List<JudgeAssignmentRaw> {
       return tracked {
         assignmentCalls++
+        assignmentRequestCourseIds += course.courseId
         if (shouldReturnEmptyAssignments) {
           if (assignmentCalls >= 2) {
             shouldReturnEmptyAssignments = false

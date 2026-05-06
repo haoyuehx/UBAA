@@ -30,6 +30,10 @@ class JudgeApiTest {
   fun setup() {
     AuthTokensStore.settings = MapSettings()
     ClientIdStore.settings = MapSettings()
+    CredentialStore.settings = MapSettings()
+    ConnectionModeStore.settings = MapSettings()
+    LocalJudgeHistoricalCourseStore.settings = MapSettings()
+    ConnectionRuntime.clearSelectedMode()
   }
 
   @Test
@@ -94,6 +98,40 @@ class JudgeApiTest {
     val result = api.getAssignments(includeExpired = true)
 
     assertTrue(result.isSuccess, result.exceptionOrNull()?.message.orEmpty())
+  }
+
+  @Test
+  fun shouldPassClientSkippedCoursesAndStoreReturnedCutoffCourses() = runTest {
+    ConnectionModeStore.save(ConnectionMode.SERVER_RELAY)
+    ConnectionRuntime.resolveSelectedMode()
+    LocalJudgeHistoricalCourseStore.add(ConnectionMode.SERVER_RELAY, "24182104", listOf("1", "2"))
+    val mockEngine = MockEngine { request ->
+      assertEquals("/api/v1/judge/assignments", request.url.encodedPath)
+      assertEquals(listOf("1", "2"), request.url.parameters.getAll("skipCourseId"))
+      respond(
+          content =
+              ByteReadChannel(
+                  json.encodeToString(
+                      JudgeAssignmentsResponse(
+                          assignments = emptyList(),
+                          historicalCutoffCourseIds = listOf("3"),
+                      )
+                  )
+              ),
+          status = HttpStatusCode.OK,
+          headers = headersOf(HttpHeaders.ContentType, "application/json"),
+      )
+    }
+
+    val api = JudgeApi(ApiClient(mockEngine))
+
+    val result = api.getAssignments(userKey = "24182104")
+
+    assertTrue(result.isSuccess, result.exceptionOrNull()?.message.orEmpty())
+    assertEquals(
+        setOf("1", "2", "3"),
+        LocalJudgeHistoricalCourseStore.get(ConnectionMode.SERVER_RELAY, "24182104"),
+    )
   }
 
   @Test

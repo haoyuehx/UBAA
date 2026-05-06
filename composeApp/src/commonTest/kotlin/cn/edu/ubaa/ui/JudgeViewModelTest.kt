@@ -74,6 +74,37 @@ class JudgeViewModelTest {
   }
 
   @Test
+  fun `assignment detail enrichment skips complete summaries`() = runTest {
+    setMainDispatcher(testScheduler)
+    val api = RecordingJudgeApi(assignments = detailBackedAssignments())
+    val viewModel = createViewModel(api)
+
+    viewModel.ensureAssignmentsLoaded()
+    advanceUntilIdle()
+
+    assertTrue(!viewModel.uiState.value.isEnrichingAssignments)
+    assertEquals(emptyList(), api.batchDetailRequests)
+    assertEquals(emptyList(), api.detailRequests)
+    assertEquals(
+        listOf("101", "102"),
+        viewModel.uiState.value.visibleAssignments.map { it.assignmentId },
+    )
+  }
+
+  @Test
+  fun `assignment detail enrichment only requests incomplete summaries`() = runTest {
+    setMainDispatcher(testScheduler)
+    val api = RecordingJudgeApi(assignments = partiallyBackedAssignments())
+    val viewModel = createViewModel(api)
+
+    viewModel.ensureAssignmentsLoaded()
+    advanceUntilIdle()
+
+    assertEquals(listOf(listOf("2:102", "3:103")), api.batchDetailRequests)
+    assertEquals(emptyList(), api.detailRequests)
+  }
+
+  @Test
   fun `assignment detail enrichment falls back to single details when batch fails`() = runTest {
     setMainDispatcher(testScheduler)
     val api = RecordingJudgeApi(shouldFailBatchDetails = true)
@@ -248,6 +279,7 @@ class JudgeViewModelTest {
 
   private inner class RecordingJudgeApi(
       private val assignmentCount: Int = 3,
+      private val assignments: List<JudgeAssignmentSummaryDto>? = null,
       var shouldReturnBatchDetails: Boolean = true,
       private val shouldFailBatchDetails: Boolean = false,
       private val shouldFailSingleDetails: Boolean = false,
@@ -256,10 +288,13 @@ class JudgeViewModelTest {
     val detailRequests = mutableListOf<String>()
     val batchDetailRequests = mutableListOf<List<String>>()
 
-    override suspend fun getAssignments(includeExpired: Boolean): Result<JudgeAssignmentsResponse> {
+    override suspend fun getAssignments(
+        includeExpired: Boolean,
+        userKey: String?,
+    ): Result<JudgeAssignmentsResponse> {
       assignmentRequests += includeExpired
       return Result.success(
-          JudgeAssignmentsResponse(assignments = testAssignments(assignmentCount))
+          JudgeAssignmentsResponse(assignments = assignments ?: testAssignments(assignmentCount))
       )
     }
 
@@ -333,6 +368,89 @@ class JudgeViewModelTest {
           )
         }
   }
+
+  private fun detailBackedAssignments(): List<JudgeAssignmentSummaryDto> =
+      listOf(
+          detailBackedAssignment(
+              courseId = "1",
+              courseName = "软件工程",
+              assignmentId = "101",
+              title = "设计作业",
+              startTime = "2026-04-20 19:00:00",
+              dueTime = "2026-05-03 23:00:00",
+              submissionStatus = JudgeSubmissionStatus.PARTIAL,
+              submissionStatusText = "进行中(1/2)",
+          ),
+          detailBackedAssignment(
+              courseId = "2",
+              courseName = "算法设计",
+              assignmentId = "102",
+              title = "编程作业",
+              startTime = "2026-04-15 08:00:00",
+              dueTime = "2026-05-10 23:00:00",
+              submissionStatus = JudgeSubmissionStatus.UNSUBMITTED,
+              submissionStatusText = "未提交",
+          ),
+      )
+
+  private fun partiallyBackedAssignments(): List<JudgeAssignmentSummaryDto> =
+      listOf(
+          detailBackedAssignment(
+              courseId = "1",
+              courseName = "软件工程",
+              assignmentId = "101",
+              title = "设计作业",
+              startTime = "2026-04-20 19:00:00",
+              dueTime = "2026-05-03 23:00:00",
+              submissionStatus = JudgeSubmissionStatus.PARTIAL,
+              submissionStatusText = "进行中(1/2)",
+          ),
+          detailBackedAssignment(
+              courseId = "2",
+              courseName = "算法设计",
+              assignmentId = "102",
+              title = "编程作业",
+              startTime = "2026-04-15 08:00:00",
+              dueTime = null,
+              submissionStatus = JudgeSubmissionStatus.UNSUBMITTED,
+              submissionStatusText = "未提交",
+          ),
+          detailBackedAssignment(
+              courseId = "3",
+              courseName = "数据库",
+              assignmentId = "103",
+              title = "状态未知作业",
+              startTime = "2026-04-01 08:00:00",
+              dueTime = "2026-04-10 23:00:00",
+              submissionStatus = JudgeSubmissionStatus.UNKNOWN,
+              submissionStatusText = "未知状态",
+          ),
+      )
+
+  private fun detailBackedAssignment(
+      courseId: String,
+      courseName: String,
+      assignmentId: String,
+      title: String,
+      startTime: String?,
+      dueTime: String?,
+      submissionStatus: JudgeSubmissionStatus,
+      submissionStatusText: String,
+  ): JudgeAssignmentSummaryDto =
+      JudgeAssignmentSummaryDto(
+          courseId = courseId,
+          courseName = courseName,
+          assignmentId = assignmentId,
+          title = title,
+          startTime = startTime,
+          dueTime = dueTime,
+          maxScore = "100",
+          myScore = null,
+          totalProblems = 2,
+          submittedCount = 1,
+          submissionStatus = submissionStatus,
+          submissionStatusText = submissionStatusText,
+      )
 
   private fun detailFor(courseId: String, assignmentId: String): JudgeAssignmentDetailDto =
       when (assignmentId) {

@@ -7,6 +7,7 @@ import cn.edu.ubaa.model.dto.JudgeAssignmentSummaryDto
 import cn.edu.ubaa.model.dto.JudgeAssignmentsResponse
 import cn.edu.ubaa.model.dto.JudgeProblemDto
 import cn.edu.ubaa.model.dto.JudgeSubmissionStatus
+import com.russhwolf.settings.Settings
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.cookies.CookiesStorage
 import io.ktor.client.request.HttpRequestBuilder
@@ -36,26 +37,41 @@ internal class LocalJudgeApiBackend(
       Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
     }
 ) : JudgeApiBackend {
-  override suspend fun getAssignments(includeExpired: Boolean): Result<JudgeAssignmentsResponse> =
-      runLocalJudgeCall("希冀作业列表加载失败，请稍后重试") { getAssignmentsResponse(includeExpired) }
+  override suspend fun getAssignments(
+      includeExpired: Boolean,
+      userKey: String?,
+  ): Result<JudgeAssignmentsResponse> =
+      runLocalJudgeCall("希冀作业列表加载失败，请稍后重试") { session ->
+        getAssignmentsResponse(
+            includeExpired = includeExpired,
+            userKey = resolveJudgeCourseSkipUserKey(userKey, session),
+        )
+      }
 
   override suspend fun getAssignmentDetail(
       courseId: String,
       assignmentId: String,
   ): Result<JudgeAssignmentDetailDto> =
-      runLocalJudgeCall("希冀作业详情加载失败，请稍后重试") { getAssignmentDetailResponse(courseId, assignmentId) }
+      runLocalJudgeCall("希冀作业详情加载失败，请稍后重试") { _ ->
+        getAssignmentDetailResponse(courseId, assignmentId)
+      }
 
   override suspend fun getAssignmentDetails(
       keys: List<JudgeAssignmentDetailKeyDto>
   ): Result<JudgeAssignmentDetailsResponse> =
-      runLocalJudgeCall("希冀作业详情加载失败，请稍后重试") { getAssignmentDetailsResponse(keys) }
+      runLocalJudgeCall("希冀作业详情加载失败，请稍后重试") { _ -> getAssignmentDetailsResponse(keys) }
 
   private suspend fun LocalJudgeClient.getAssignmentsResponse(
-      includeExpired: Boolean
+      includeExpired: Boolean,
+      userKey: String,
   ): JudgeAssignmentsResponse {
     val courses = getCoursesCached()
-    val assignments =
+    val skippedCourseIds =
+        if (includeExpired) emptySet()
+        else LocalJudgeHistoricalCourseStore.get(cacheScope.mode, userKey)
+    val courseResults =
         courses
+            .filter { course -> includeExpired || course.courseId !in skippedCourseIds }
             .mapConcurrently(LOCAL_JUDGE_ASSIGNMENT_QUERY_CONCURRENCY) { course ->
               withIsolatedClient { worker ->
                 getAssignmentSummaries(
@@ -65,23 +81,40 @@ internal class LocalJudgeApiBackend(
                 )
               }
             }
-            .flatten()
+    val historicalCutoffCourseIds = courseResults.flatMap { it.historicalCutoffCourseIds }.toSet()
+    val assignments =
+        courseResults
+            .flatMap { it.summaries }
             .sortedWith(
                 compareBy<JudgeAssignmentSummaryDto> { it.dueTime ?: "9999-99-99 99:99:99" }
                     .thenBy { it.courseName }
                     .thenBy { it.title }
             )
+    LocalJudgeHistoricalCourseStore.add(
+        mode = cacheScope.mode,
+        userKey = userKey,
+        courseIds = historicalCutoffCourseIds,
+    )
 
-    return JudgeAssignmentsResponse(assignments)
+    return JudgeAssignmentsResponse(
+        assignments = assignments,
+        historicalCutoffCourseIds = historicalCutoffCourseIds.sorted(),
+    )
   }
+
+  private data class LocalJudgeAssignmentSummaryResult(
+      val summaries: List<JudgeAssignmentSummaryDto>,
+      val historicalCutoffCourseIds: Set<String>,
+  )
 
   private suspend fun LocalJudgeClient.getAssignmentSummaries(
       course: LocalJudgeCourseRaw,
       includeExpired: Boolean,
       worker: LocalJudgeClient,
-  ): List<JudgeAssignmentSummaryDto> {
+  ): LocalJudgeAssignmentSummaryResult {
     val assignments = getAssignmentsCached(course) { worker.getAssignments(course) }
     val summaries = mutableListOf<JudgeAssignmentSummaryDto>()
+    var reachedHistoricalCutoff = false
     for (assignment in assignments) {
       val cacheKey =
           LocalJudgeDetailCacheKey(
@@ -98,12 +131,19 @@ internal class LocalJudgeApiBackend(
                 title = assignment.title,
             )
           }
-      if (!includeExpired && detail.startedBeforeSixMonthCutoff()) {
-        break
+      if (detail.startedBeforeSixMonthCutoff()) {
+        reachedHistoricalCutoff = true
+        if (!includeExpired) {
+          break
+        }
       }
       summaries += detail.toSummary()
     }
-    return summaries
+    return LocalJudgeAssignmentSummaryResult(
+        summaries = summaries,
+        historicalCutoffCourseIds =
+            if (reachedHistoricalCutoff) setOf(course.courseId) else emptySet(),
+    )
   }
 
   private suspend fun LocalJudgeClient.getAssignmentDetailResponse(
@@ -160,7 +200,7 @@ internal class LocalJudgeApiBackend(
 
   private suspend fun <T> runLocalJudgeCall(
       defaultMessage: String,
-      block: suspend LocalJudgeClient.() -> T,
+      block: suspend LocalJudgeClient.(LocalAuthSession) -> T,
   ): Result<T> {
     val session =
         LocalAuthSessionStore.get() ?: return Result.failure(localUnauthenticatedApiException())
@@ -170,7 +210,7 @@ internal class LocalJudgeApiBackend(
           ConnectionRuntime.currentMode()?.takeIf { it != ConnectionMode.SERVER_RELAY }
               ?: ConnectionMode.DIRECT
       Result.success(
-          LocalJudgeClient(cacheScope = LocalJudgeCacheScope(mode, session.username)).block()
+          LocalJudgeClient(cacheScope = LocalJudgeCacheScope(mode, session.username)).block(session)
       )
     } catch (e: LocalJudgeAuthenticationException) {
       Result.failure(resolveLocalBusinessAuthenticationFailure("judge_auth_failed"))
@@ -548,6 +588,54 @@ internal object LocalJudgeApiCache {
     localJudgeNowMillis() - cachedAt < ttlMillis
   }
 }
+
+internal object LocalJudgeHistoricalCourseStore {
+  private const val KEY_LOCAL_JUDGE_HISTORICAL_COURSES = "local_judge_historical_courses"
+  private var _settings: Settings? = null
+  var settings: Settings
+    get() = _settings ?: Settings().also { _settings = it }
+    set(value) {
+      _settings = value
+    }
+
+  fun get(mode: ConnectionMode, userKey: String): Set<String> =
+      settings
+          .getStringOrNull(storageKey(mode, userKey))
+          ?.lineSequence()
+          ?.map { it.trim() }
+          ?.filter { it.isNotBlank() }
+          ?.toSet() ?: emptySet()
+
+  fun add(
+      mode: ConnectionMode,
+      userKey: String,
+      courseIds: Iterable<String>,
+  ) {
+    val normalizedCourseIds = courseIds.map { it.trim() }.filter { it.isNotBlank() }
+    if (normalizedCourseIds.isEmpty()) return
+    val merged = get(mode, userKey) + normalizedCourseIds
+    settings.putString(storageKey(mode, userKey), merged.sorted().joinToString("\n"))
+  }
+
+  private fun storageKey(mode: ConnectionMode, userKey: String): String =
+      ModeScopedSessionStore.scopedKey(
+          "${KEY_LOCAL_JUDGE_HISTORICAL_COURSES}_${sanitizeUserKey(userKey)}",
+          mode,
+      )
+
+  private fun sanitizeUserKey(userKey: String): String =
+      userKey.trim().ifBlank { "default" }.replace(Regex("""[^A-Za-z0-9_.-]"""), "_")
+}
+
+internal fun resolveJudgeCourseSkipUserKey(
+    explicitUserKey: String?,
+    localSession: LocalAuthSession? = null,
+): String =
+    explicitUserKey?.takeIf { it.isNotBlank() }
+        ?: localSession?.user?.schoolid?.takeIf { it.isNotBlank() }
+        ?: localSession?.username?.takeIf { it.isNotBlank() }
+        ?: CredentialStore.getUsername()?.takeIf { it.isNotBlank() }
+        ?: "default"
 
 private fun normalizeLocalJudgeDetailKeys(
     keys: List<JudgeAssignmentDetailKeyDto>

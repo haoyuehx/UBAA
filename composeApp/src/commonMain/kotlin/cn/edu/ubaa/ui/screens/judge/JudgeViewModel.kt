@@ -46,6 +46,7 @@ data class JudgeUiState(
 @OptIn(ExperimentalTime::class)
 class JudgeViewModel(
     private val judgeApi: JudgeApi = JudgeApi(),
+    private val userKey: String? = null,
     private val nowProvider: () -> LocalDateTime = {
       Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
     },
@@ -82,14 +83,15 @@ class JudgeViewModel(
           )
 
       judgeApi
-          .getAssignments(includeExpired = includeExpired)
+          .getAssignments(includeExpired = includeExpired, userKey = userKey)
           .onSuccess { response ->
             val currentState = _uiState.value
+            val shouldEnrichAssignments = response.assignments.any { it.needsDetailEnrichment() }
             _uiState.value =
                 currentState.copy(
                     isLoading = false,
                     isRefreshing = false,
-                    isEnrichingAssignments = response.assignments.isNotEmpty(),
+                    isEnrichingAssignments = shouldEnrichAssignments,
                     assignmentsResponse = response,
                     visibleAssignments =
                         buildVisibleAssignments(response.assignments, currentState),
@@ -200,14 +202,15 @@ class JudgeViewModel(
       loadVersion: Int,
   ) {
     assignmentDetailEnrichmentJob?.cancel()
-    if (summaries.isEmpty()) {
+    val summariesToEnrich = summaries.filter { it.needsDetailEnrichment() }
+    if (summariesToEnrich.isEmpty()) {
       _uiState.value = _uiState.value.copy(isEnrichingAssignments = false)
       return
     }
 
     assignmentDetailEnrichmentJob =
         viewModelScope.launch {
-          summaries.enrichDetailsInBatches(loadVersion)
+          summariesToEnrich.enrichDetailsInBatches(loadVersion)
 
           if (loadVersion == assignmentLoadVersion) {
             val currentState = _uiState.value
@@ -277,7 +280,12 @@ class JudgeViewModel(
               assignment
             }
           }
-      val response = JudgeAssignmentsResponse(updatedAssignments)
+      val response =
+          JudgeAssignmentsResponse(
+              assignments = updatedAssignments,
+              historicalCutoffCourseIds =
+                  currentState.assignmentsResponse?.historicalCutoffCourseIds.orEmpty(),
+          )
       currentState.copy(
           assignmentsResponse = response,
           visibleAssignments = buildVisibleAssignments(response.assignments, currentState),
@@ -352,6 +360,11 @@ class JudgeViewModel(
   private fun JudgeAssignmentSummaryDto.isUnfinished(): Boolean =
       submissionStatus == JudgeSubmissionStatus.UNSUBMITTED ||
           submissionStatus == JudgeSubmissionStatus.PARTIAL
+
+  private fun JudgeAssignmentSummaryDto.needsDetailEnrichment(): Boolean =
+      startTime.isNullOrBlank() ||
+          dueTime.isNullOrBlank() ||
+          submissionStatus == JudgeSubmissionStatus.UNKNOWN
 
   private fun JudgeAssignmentDetailDto.toSummary(): JudgeAssignmentSummaryDto =
       JudgeAssignmentSummaryDto(

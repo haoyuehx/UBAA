@@ -47,17 +47,24 @@ internal class JudgeService(
       val assignmentId: String,
   )
 
+  private data class JudgeAssignmentSummaryResult(
+      val summaries: List<JudgeAssignmentSummaryDto>,
+      val historicalCutoffCourseIds: Set<String>,
+  )
+
   private val clientCache = ConcurrentHashMap<String, CachedClient>()
 
   suspend fun getAssignments(
       username: String,
       includeExpired: Boolean = false,
+      skippedCourseIds: Set<String> = emptySet(),
   ): JudgeAssignmentsResponse {
     return withJudgeDeadline("希冀作业列表加载超时", ASSIGNMENTS_DEADLINE) {
       withCachedClient(username) { cached ->
         val courses = cached.getCourses()
-        val assignments =
+        val courseResults =
             courses
+                .filter { course -> includeExpired || course.courseId !in skippedCourseIds }
                 .mapConcurrently(JUDGE_ASSIGNMENT_QUERY_CONCURRENCY) { course ->
                   cached.client.withIsolatedClient { worker ->
                     cached.getAssignmentSummaries(
@@ -67,13 +74,20 @@ internal class JudgeService(
                     )
                   }
                 }
-                .flatten()
+        val historicalCutoffCourseIds =
+            courseResults.flatMap { it.historicalCutoffCourseIds }.toSet()
+        val assignments =
+            courseResults
+                .flatMap { it.summaries }
                 .sortedWith(
                     compareBy<JudgeAssignmentSummaryDto> { it.dueTime ?: "9999-99-99 99:99:99" }
                         .thenBy { it.courseName }
                         .thenBy { it.title }
                 )
-        JudgeAssignmentsResponse(assignments)
+        JudgeAssignmentsResponse(
+            assignments = assignments,
+            historicalCutoffCourseIds = historicalCutoffCourseIds.sorted(),
+        )
       }
     }
   }
@@ -193,9 +207,10 @@ internal class JudgeService(
       course: JudgeCourseRaw,
       includeExpired: Boolean,
       worker: JudgeClient,
-  ): List<JudgeAssignmentSummaryDto> {
+  ): JudgeAssignmentSummaryResult {
     val assignments = getAssignments(course) { worker.getAssignments(course) }
     val summaries = mutableListOf<JudgeAssignmentSummaryDto>()
+    var reachedHistoricalCutoff = false
     for (assignment in assignments) {
       val cacheKey =
           JudgeAssignmentDetailCacheKey(
@@ -211,12 +226,19 @@ internal class JudgeService(
                 title = assignment.title,
             )
           }
-      if (!includeExpired && detail.startedBeforeSixMonthCutoff()) {
-        break
+      if (detail.startedBeforeSixMonthCutoff()) {
+        reachedHistoricalCutoff = true
+        if (!includeExpired) {
+          break
+        }
       }
       summaries += detail.toSummary()
     }
-    return summaries
+    return JudgeAssignmentSummaryResult(
+        summaries = summaries,
+        historicalCutoffCourseIds =
+            if (reachedHistoricalCutoff) setOf(course.courseId) else emptySet(),
+    )
   }
 
   private suspend fun CachedClient.getCourses(): List<JudgeCourseRaw> {

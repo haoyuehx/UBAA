@@ -24,11 +24,21 @@ fun Route.judgeRouting() {
       val session = call.requireUserSession()
       val includeExpired =
           call.request.queryParameters["includeExpired"]?.toBooleanStrictOrNull() ?: false
+      val skippedCourseIds =
+          call.request.queryParameters
+              .getAll("skipCourseId")
+              .orEmpty()
+              .filter { it.isNotBlank() }
+              .toSet()
       call.observeBusinessOperation("judge", "list_assignments") {
         call.runJudgeCall(this) {
           call.respond(
               HttpStatusCode.OK,
-              judgeService.getAssignments(session.username, includeExpired = includeExpired),
+              judgeService.getAssignments(
+                  session.username,
+                  includeExpired = includeExpired,
+                  skippedCourseIds = skippedCourseIds,
+              ),
           )
         }
       }

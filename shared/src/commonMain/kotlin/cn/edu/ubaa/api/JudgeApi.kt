@@ -13,7 +13,10 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 
 interface JudgeApiBackend {
-  suspend fun getAssignments(includeExpired: Boolean = false): Result<JudgeAssignmentsResponse>
+  suspend fun getAssignments(
+      includeExpired: Boolean = false,
+      userKey: String? = null,
+  ): Result<JudgeAssignmentsResponse>
 
   suspend fun getAssignmentDetail(
       courseId: String,
@@ -39,9 +42,10 @@ open class JudgeApi(
 
   /** 获取所有课程下的希冀作业摘要。 */
   open suspend fun getAssignments(
-      includeExpired: Boolean = false
+      includeExpired: Boolean = false,
+      userKey: String? = null,
   ): Result<JudgeAssignmentsResponse> {
-    return currentBackend().getAssignments(includeExpired)
+    return currentBackend().getAssignments(includeExpired, userKey)
   }
 
   /** 获取指定课程下的指定作业详情。 */
@@ -62,14 +66,28 @@ open class JudgeApi(
 
 internal class RelayJudgeApiBackend(private val apiClient: ApiClient = ApiClientProvider.shared) :
     JudgeApiBackend {
-  override suspend fun getAssignments(includeExpired: Boolean): Result<JudgeAssignmentsResponse> {
-    return safeApiCall {
-      apiClient.getClient().get("api/v1/judge/assignments") {
-        if (includeExpired) {
-          parameter("includeExpired", true)
+  override suspend fun getAssignments(
+      includeExpired: Boolean,
+      userKey: String?,
+  ): Result<JudgeAssignmentsResponse> {
+    val mode = ConnectionRuntime.currentMode() ?: ConnectionMode.SERVER_RELAY
+    val resolvedUserKey = resolveJudgeCourseSkipUserKey(userKey)
+    val skippedCourseIds =
+        if (includeExpired) emptySet()
+        else LocalJudgeHistoricalCourseStore.get(mode, resolvedUserKey)
+    val result =
+        safeApiCall<JudgeAssignmentsResponse> {
+          apiClient.getClient().get("api/v1/judge/assignments") {
+            if (includeExpired) {
+              parameter("includeExpired", true)
+            }
+            skippedCourseIds.forEach { courseId -> parameter("skipCourseId", courseId) }
+          }
         }
-      }
+    result.getOrNull()?.historicalCutoffCourseIds?.let { courseIds ->
+      LocalJudgeHistoricalCourseStore.add(mode, resolvedUserKey, courseIds)
     }
+    return result
   }
 
   override suspend fun getAssignmentDetail(

@@ -15,6 +15,7 @@ enum class JudgeSubmissionStatus {
 @Serializable
 data class JudgeAssignmentsResponse(
     val assignments: List<JudgeAssignmentSummaryDto>,
+    val historicalCutoffCourseIds: List<String> = emptyList(),
 )
 
 /** 希冀作业详情批量查询键。 */
