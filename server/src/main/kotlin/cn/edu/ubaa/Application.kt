@@ -87,9 +87,6 @@ fun main() {
               port = serverPort
               host = serverHost
             }
-            connectionGroupSize = 2
-            workerGroupSize = 8
-            callGroupSize = 16
           },
       )
       .start(wait = true)
