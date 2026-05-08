@@ -57,7 +57,6 @@ DerivedData/
 node_modules/
 npm-debug.log
 yarn-error.log
-package-lock.json
 yarn.lock
 .js/
 .wasm/
@@ -91,7 +90,7 @@ _bmad-output
 .gemini
 .serena/
 .github/agents
-docs
+wiki/
 .codex
 ktfmt-0.61-with-dependencies.jar
 CLAUDE.md
@@ -104,3 +103,5 @@ todo.md
 output/
 .playwright-mcp/
 server/announcement.json
+docs/.vitepress/dist
+docs/.vitepress/cache

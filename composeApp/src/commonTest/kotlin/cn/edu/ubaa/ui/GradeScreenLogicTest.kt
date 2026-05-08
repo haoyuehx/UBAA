@@ -42,6 +42,7 @@ class GradeScreenLogicTest {
     assertEquals(5.0, statistics.totalCredits)
     assertEquals(3.55, statistics.gpa)
     assertEquals(88.0, statistics.weightedAverage)
+    assertEquals(90.0, statistics.arithmeticAverage)
   }
 
   @Test
@@ -59,7 +60,8 @@ class GradeScreenLogicTest {
     assertEquals(4, statistics.courseCount)
     assertEquals(14.0, statistics.totalCredits)
     assertEquals(3.75, statistics.gpa)
-    assertEquals(90.0, statistics.weightedAverage)
+    assertEquals(85.0, statistics.weightedAverage)
+    assertEquals(85.0, statistics.arithmeticAverage)
   }
 
   @Test
@@ -78,7 +80,8 @@ class GradeScreenLogicTest {
     assertEquals(5, statistics.courseCount)
     assertEquals(5.0, statistics.totalCredits)
     assertEquals(2.4, statistics.gpa)
-    assertEquals(63.0, statistics.weightedAverage)
+    assertEquals(60.0, statistics.weightedAverage)
+    assertEquals(60.0, statistics.arithmeticAverage)
   }
 
   @Test
@@ -95,6 +98,7 @@ class GradeScreenLogicTest {
     assertEquals(4.0, statistics.totalCredits)
     assertNull(statistics.gpa)
     assertNull(statistics.weightedAverage)
+    assertNull(statistics.arithmeticAverage)
   }
 }
 
