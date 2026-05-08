@@ -24,6 +24,7 @@ import cn.edu.ubaa.model.dto.UserInfoResponse
 import com.russhwolf.settings.Settings
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.cookies.CookiesStorage
@@ -228,14 +229,21 @@ internal class PersistentLocalCookieStorage(private val mode: ConnectionMode) : 
 }
 
 internal object LocalUpstreamClientProvider {
+  private fun currentCookieMode(): ConnectionMode =
+      ConnectionRuntime.currentMode()?.takeIf { it != ConnectionMode.SERVER_RELAY }
+          ?: ConnectionMode.DIRECT
+
   internal var clientFactory: (Boolean) -> HttpClient = { followRedirects ->
     buildLocalUpstreamClient(
         followRedirects = followRedirects,
-        cookieStorage =
-            LocalCookieStore.storage(
-                ConnectionRuntime.currentMode()?.takeIf { it != ConnectionMode.SERVER_RELAY }
-                    ?: ConnectionMode.DIRECT
-            ),
+        cookieStorage = LocalCookieStore.storage(currentCookieMode()),
+    )
+  }
+  internal var libBookClientFactory: (Boolean) -> HttpClient = { followRedirects ->
+    buildLocalUpstreamClient(
+        followRedirects = followRedirects,
+        cookieStorage = LocalCookieStore.storage(currentCookieMode()),
+        engine = getLibBookHttpClientEngine(),
     )
   }
   internal var isolatedClientFactory: (Boolean, CookiesStorage) -> HttpClient =
@@ -245,10 +253,19 @@ internal object LocalUpstreamClientProvider {
 
   private val sharedClient =
       ResettableSharedInstance(factory = { clientFactory(true) }, disposer = HttpClient::close)
+  private val libBookSharedClient =
+      ResettableSharedInstance(
+          factory = { libBookClientFactory(true) },
+          disposer = HttpClient::close,
+      )
 
   fun shared(): HttpClient = sharedClient.getOrCreate()
 
+  fun libBookShared(): HttpClient = libBookSharedClient.getOrCreate()
+
   fun newNoRedirectClient(): HttpClient = clientFactory(false)
+
+  fun newLibBookNoRedirectClient(): HttpClient = libBookClientFactory(false)
 
   fun newClient(
       cookieStorage: CookiesStorage,
@@ -257,14 +274,18 @@ internal object LocalUpstreamClientProvider {
 
   fun reset() {
     sharedClient.reset()
+    libBookSharedClient.reset()
     clientFactory = { followRedirects ->
       buildLocalUpstreamClient(
           followRedirects = followRedirects,
-          cookieStorage =
-              LocalCookieStore.storage(
-                  ConnectionRuntime.currentMode()?.takeIf { it != ConnectionMode.SERVER_RELAY }
-                      ?: ConnectionMode.DIRECT
-              ),
+          cookieStorage = LocalCookieStore.storage(currentCookieMode()),
+      )
+    }
+    libBookClientFactory = { followRedirects ->
+      buildLocalUpstreamClient(
+          followRedirects = followRedirects,
+          cookieStorage = LocalCookieStore.storage(currentCookieMode()),
+          engine = getLibBookHttpClientEngine(),
       )
     }
     isolatedClientFactory = { followRedirects, cookieStorage ->
@@ -276,8 +297,9 @@ internal object LocalUpstreamClientProvider {
 private fun buildLocalUpstreamClient(
     followRedirects: Boolean,
     cookieStorage: CookiesStorage,
+    engine: HttpClientEngine = getDefaultEngine(),
 ): HttpClient {
-  return HttpClient(getDefaultEngine()) {
+  return HttpClient(engine) {
     this.followRedirects = followRedirects
     install(ContentNegotiation) {
       json(

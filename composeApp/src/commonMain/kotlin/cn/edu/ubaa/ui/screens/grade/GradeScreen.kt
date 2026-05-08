@@ -153,7 +153,7 @@ private fun GradeSummaryCard(
       ) {
         SummaryValue(
             label = "GPA",
-            value = if (isLoading) "统计中" else statistics.gpa?.let(::formatNumber) ?: "--",
+            value = if (isLoading) "统计中" else statistics.gpa?.let(::formatGradePoint) ?: "--",
             modifier = Modifier.weight(1f),
         )
         SummaryValue(
@@ -291,6 +291,13 @@ private fun GradeInfoRow(
 private fun formatNumber(value: Double): String {
   val rounded = kotlin.math.round(value * 100.0) / 100.0
   return if (rounded % 1.0 == 0.0) rounded.toInt().toString() else rounded.toString()
+}
+
+internal fun formatGradePoint(value: Double): String {
+  val rounded = kotlin.math.round(value * 100.0).toLong()
+  val integerPart = rounded / 100
+  val decimalPart = kotlin.math.abs(rounded % 100)
+  return "$integerPart.${decimalPart.toString().padStart(2, '0')}"
 }
 
 internal data class GradeStatistics(

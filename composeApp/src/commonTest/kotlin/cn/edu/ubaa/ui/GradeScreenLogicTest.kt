@@ -2,6 +2,7 @@ package cn.edu.ubaa.ui
 
 import cn.edu.ubaa.model.dto.Grade
 import cn.edu.ubaa.ui.screens.grade.calculateGradeStatistics
+import cn.edu.ubaa.ui.screens.grade.formatGradePoint
 import cn.edu.ubaa.ui.screens.grade.gradeDetailRows
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -10,6 +11,13 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class GradeScreenLogicTest {
+  @Test
+  fun `grade point formatting keeps two decimal places`() {
+    assertEquals("2.40", formatGradePoint(2.4))
+    assertEquals("3.56", formatGradePoint(3.555))
+    assertEquals("4.00", formatGradePoint(3.999))
+  }
+
   @Test
   fun `grade detail rows omit grade point`() {
     val rows =

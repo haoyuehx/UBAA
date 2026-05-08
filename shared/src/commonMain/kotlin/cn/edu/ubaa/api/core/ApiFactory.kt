@@ -12,12 +12,14 @@ import cn.edu.ubaa.api.feature.ClassroomApiBackend
 import cn.edu.ubaa.api.feature.EvaluationServiceBackend
 import cn.edu.ubaa.api.feature.GradeApiBackend
 import cn.edu.ubaa.api.feature.JudgeApiBackend
+import cn.edu.ubaa.api.feature.LibBookApiBackend
 import cn.edu.ubaa.api.feature.RelayBykcApiBackend
 import cn.edu.ubaa.api.feature.RelayCgyyApiBackend
 import cn.edu.ubaa.api.feature.RelayClassroomApiBackend
 import cn.edu.ubaa.api.feature.RelayEvaluationServiceBackend
 import cn.edu.ubaa.api.feature.RelayGradeApiBackend
 import cn.edu.ubaa.api.feature.RelayJudgeApiBackend
+import cn.edu.ubaa.api.feature.RelayLibBookApiBackend
 import cn.edu.ubaa.api.feature.RelayScheduleApiBackend
 import cn.edu.ubaa.api.feature.RelaySigninApiBackend
 import cn.edu.ubaa.api.feature.RelaySpocApiBackend
@@ -33,6 +35,7 @@ import cn.edu.ubaa.api.local.LocalClassroomApiBackend
 import cn.edu.ubaa.api.local.LocalEvaluationServiceBackend
 import cn.edu.ubaa.api.local.LocalGradeApiBackend
 import cn.edu.ubaa.api.local.LocalJudgeApiBackend
+import cn.edu.ubaa.api.local.LocalLibBookApiBackend
 import cn.edu.ubaa.api.local.LocalScheduleApiBackend
 import cn.edu.ubaa.api.local.LocalSigninApiBackend
 import cn.edu.ubaa.api.local.LocalSpocApiBackend
@@ -63,6 +66,8 @@ interface ApiFactory {
   fun evaluationService(): EvaluationServiceBackend
 
   fun gradeApi(): GradeApiBackend
+
+  fun libBookApi(): LibBookApiBackend
 }
 
 internal object DefaultApiFactory : ApiFactory {
@@ -152,6 +157,13 @@ internal object DefaultApiFactory : ApiFactory {
         ConnectionMode.WEBVPN -> LocalGradeApiBackend()
         ConnectionMode.SERVER_RELAY -> RelayGradeApiBackend()
       }
+
+  override fun libBookApi(): LibBookApiBackend =
+      when (mode()) {
+        ConnectionMode.DIRECT -> LocalLibBookApiBackend()
+        ConnectionMode.WEBVPN -> LocalLibBookApiBackend()
+        ConnectionMode.SERVER_RELAY -> RelayLibBookApiBackend()
+      }
 }
 
 internal object RelayApiFactory : ApiFactory {
@@ -178,4 +190,6 @@ internal object RelayApiFactory : ApiFactory {
   override fun evaluationService(): EvaluationServiceBackend = RelayEvaluationServiceBackend()
 
   override fun gradeApi(): GradeApiBackend = RelayGradeApiBackend()
+
+  override fun libBookApi(): LibBookApiBackend = RelayLibBookApiBackend()
 }

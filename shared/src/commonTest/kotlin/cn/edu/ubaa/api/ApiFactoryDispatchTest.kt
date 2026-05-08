@@ -14,6 +14,7 @@ import cn.edu.ubaa.api.feature.EvaluationServiceBackend
 import cn.edu.ubaa.api.feature.GradeApi
 import cn.edu.ubaa.api.feature.GradeApiBackend
 import cn.edu.ubaa.api.feature.JudgeApiBackend
+import cn.edu.ubaa.api.feature.LibBookApiBackend
 import cn.edu.ubaa.api.feature.ScheduleApi
 import cn.edu.ubaa.api.feature.ScheduleApiBackend
 import cn.edu.ubaa.api.feature.SigninApiBackend
@@ -26,6 +27,7 @@ import cn.edu.ubaa.api.local.LocalClassroomApiBackend
 import cn.edu.ubaa.api.local.LocalEvaluationServiceBackend
 import cn.edu.ubaa.api.local.LocalGradeApiBackend
 import cn.edu.ubaa.api.local.LocalJudgeApiBackend
+import cn.edu.ubaa.api.local.LocalLibBookApiBackend
 import cn.edu.ubaa.api.local.LocalScheduleApiBackend
 import cn.edu.ubaa.api.local.LocalSigninApiBackend
 import cn.edu.ubaa.api.local.LocalSpocApiBackend
@@ -188,6 +190,7 @@ class ApiFactoryDispatchTest {
     assertTrue(DefaultApiFactory.classroomApi() is LocalClassroomApiBackend)
     assertTrue(DefaultApiFactory.evaluationService() is LocalEvaluationServiceBackend)
     assertTrue(DefaultApiFactory.gradeApi() is LocalGradeApiBackend)
+    assertTrue(DefaultApiFactory.libBookApi() is LocalLibBookApiBackend)
   }
 }
 
@@ -204,6 +207,7 @@ private class FakeApiFactory(
     private val classroomBackend: ClassroomApiBackend = FakeClassroomApiBackend(),
     private val evaluationBackend: EvaluationServiceBackend = FakeEvaluationServiceBackend(),
     private val gradeBackend: GradeApiBackend = FakeGradeApiBackend(),
+    private val libBookBackend: LibBookApiBackend = FakeLibBookApiBackend(),
 ) : ApiFactory {
   override fun authService(): AuthServiceBackend = authBackend
 
@@ -228,6 +232,8 @@ private class FakeApiFactory(
   override fun evaluationService(): EvaluationServiceBackend = evaluationBackend
 
   override fun gradeApi(): GradeApiBackend = gradeBackend
+
+  override fun libBookApi(): LibBookApiBackend = libBookBackend
 }
 
 private class FakeAuthServiceBackend : AuthServiceBackend {
@@ -314,6 +320,25 @@ private class FakeJudgeApiBackend : JudgeApiBackend {
   override suspend fun getAssignmentDetails(
       keys: List<cn.edu.ubaa.model.dto.JudgeAssignmentDetailKeyDto>
   ) = error("unused")
+}
+
+private class FakeLibBookApiBackend : LibBookApiBackend {
+  override suspend fun getLibraries(day: String) = error("unused")
+
+  override suspend fun getAreas(premisesId: String, storeyId: String?, day: String) =
+      error("unused")
+
+  override suspend fun getAreaDetail(areaId: String) = error("unused")
+
+  override suspend fun getSeats(areaId: String, day: String, startTime: String, endTime: String) =
+      error("unused")
+
+  override suspend fun reserve(request: cn.edu.ubaa.model.dto.LibBookReserveRequest) =
+      error("unused")
+
+  override suspend fun getBookings(page: Int, limit: Int) = error("unused")
+
+  override suspend fun cancelBooking(bookingId: String) = error("unused")
 }
 
 private class FakeBykcApiBackend : BykcApiBackend {
