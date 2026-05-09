@@ -50,6 +50,10 @@ import cn.edu.ubaa.ui.screens.judge.JudgeAssignmentDetailScreen
 import cn.edu.ubaa.ui.screens.judge.JudgeAssignmentsScreen
 import cn.edu.ubaa.ui.screens.judge.JudgeSortField
 import cn.edu.ubaa.ui.screens.judge.JudgeViewModel
+import cn.edu.ubaa.ui.screens.libbook.LibBookBookingsScreen
+import cn.edu.ubaa.ui.screens.libbook.LibBookHomeScreen
+import cn.edu.ubaa.ui.screens.libbook.LibBookReserveScreen
+import cn.edu.ubaa.ui.screens.libbook.LibBookViewModel
 import cn.edu.ubaa.ui.screens.menu.*
 import cn.edu.ubaa.ui.screens.schedule.CourseDetailScreen
 import cn.edu.ubaa.ui.screens.schedule.ScheduleScreen
@@ -99,6 +103,9 @@ enum class AppScreen {
   SPOC_ASSIGNMENT_DETAIL,
   JUDGE_ASSIGNMENTS,
   JUDGE_ASSIGNMENT_DETAIL,
+  LIBBOOK_HOME,
+  LIBBOOK_RESERVE,
+  LIBBOOK_BOOKINGS,
   YGDK_HOME,
   YGDK_FORM,
 }
@@ -135,6 +142,9 @@ fun MainAppScreen(
     )
   }
   val ygdkScreens = remember { setOf(AppScreen.YGDK_HOME, AppScreen.YGDK_FORM) }
+  val libBookScreens = remember {
+    setOf(AppScreen.LIBBOOK_HOME, AppScreen.LIBBOOK_RESERVE, AppScreen.LIBBOOK_BOOKINGS)
+  }
 
   var selectedBottomTab by remember { mutableStateOf(BottomNavTab.HOME) }
   var showSidebar by remember { mutableStateOf(false) }
@@ -153,8 +163,10 @@ fun MainAppScreen(
         }
       }
   var hasVisitedCgyy by remember { mutableStateOf(false) }
+  var hasVisitedLibBook by remember { mutableStateOf(false) }
   val shouldKeepCgyyViewModel =
       currentScreen == AppScreen.HOME || hasVisitedCgyy || currentScreen in cgyyScreens
+  val shouldKeepLibBookViewModel = hasVisitedLibBook || currentScreen in libBookScreens
 
   // 初始化各模块 ViewModel
   val scheduleViewModel: ScheduleViewModel = viewModel { ScheduleViewModel() }
@@ -193,6 +205,12 @@ fun MainAppScreen(
         null
       }
   val cgyyUiState = cgyyViewModel?.uiState?.collectAsState()?.value ?: CgyyUiState()
+  val libBookViewModel: LibBookViewModel? =
+      if (shouldKeepLibBookViewModel) {
+        viewModel(key = "libbook-${userData.schoolid}") { LibBookViewModel() }
+      } else {
+        null
+      }
   val classroomViewModel: ClassroomViewModel? =
       if (currentScreen == AppScreen.CLASSROOM_QUERY) {
         viewModel(key = "classroom") { ClassroomViewModel() }
@@ -341,7 +359,10 @@ fun MainAppScreen(
               AppScreen.SPOC_ASSIGNMENTS,
               AppScreen.SPOC_ASSIGNMENT_DETAIL,
               AppScreen.JUDGE_ASSIGNMENTS,
-              AppScreen.JUDGE_ASSIGNMENT_DETAIL -> BottomNavTab.REGULAR
+              AppScreen.JUDGE_ASSIGNMENT_DETAIL,
+              AppScreen.LIBBOOK_HOME,
+              AppScreen.LIBBOOK_RESERVE,
+              AppScreen.LIBBOOK_BOOKINGS -> BottomNavTab.REGULAR
               AppScreen.ADVANCED,
               AppScreen.BYKC_HOME,
               AppScreen.BYKC_COURSES,
@@ -379,7 +400,10 @@ fun MainAppScreen(
             AppScreen.SPOC_ASSIGNMENTS,
             AppScreen.SPOC_ASSIGNMENT_DETAIL,
             AppScreen.JUDGE_ASSIGNMENTS,
-            AppScreen.JUDGE_ASSIGNMENT_DETAIL -> BottomNavTab.REGULAR
+            AppScreen.JUDGE_ASSIGNMENT_DETAIL,
+            AppScreen.LIBBOOK_HOME,
+            AppScreen.LIBBOOK_RESERVE,
+            AppScreen.LIBBOOK_BOOKINGS -> BottomNavTab.REGULAR
             AppScreen.ADVANCED,
             AppScreen.BYKC_HOME,
             AppScreen.BYKC_COURSES,
@@ -441,6 +465,9 @@ fun MainAppScreen(
     if (currentScreen in cgyyScreens) {
       hasVisitedCgyy = true
     }
+    if (currentScreen in libBookScreens) {
+      hasVisitedLibBook = true
+    }
     if (currentScreen != AppScreen.HOME) {
       homeManualRefreshPending = false
       homeManualRefreshStarted = false
@@ -501,6 +528,9 @@ fun MainAppScreen(
       AppScreen.SPOC_ASSIGNMENT_DETAIL -> spocViewModel.ensureAssignmentsLoaded()
       AppScreen.JUDGE_ASSIGNMENTS,
       AppScreen.JUDGE_ASSIGNMENT_DETAIL -> judgeViewModel.ensureAssignmentsLoaded()
+      AppScreen.LIBBOOK_HOME,
+      AppScreen.LIBBOOK_RESERVE -> libBookViewModel?.ensureInitialLoaded()
+      AppScreen.LIBBOOK_BOOKINGS -> libBookViewModel?.ensureBookingsLoaded()
       AppScreen.YGDK_HOME,
       AppScreen.YGDK_FORM -> ygdkViewModel?.ensureLoaded()
       else -> Unit
@@ -545,6 +575,9 @@ fun MainAppScreen(
         AppScreen.SPOC_ASSIGNMENT_DETAIL -> "作业详情"
         AppScreen.JUDGE_ASSIGNMENTS -> "希冀作业"
         AppScreen.JUDGE_ASSIGNMENT_DETAIL -> "作业详情"
+        AppScreen.LIBBOOK_HOME -> "图书馆座位"
+        AppScreen.LIBBOOK_RESERVE -> "预约座位"
+        AppScreen.LIBBOOK_BOOKINGS -> "我的座位预约"
         AppScreen.YGDK_HOME -> "阳光打卡"
         AppScreen.YGDK_FORM -> "新增打卡"
       }
@@ -654,6 +687,7 @@ fun MainAppScreen(
                   onClassroomClick = { navigateTo(AppScreen.CLASSROOM_QUERY) },
                   onSpocClick = { navigateTo(AppScreen.SPOC_ASSIGNMENTS) },
                   onJudgeClick = { navigateTo(AppScreen.JUDGE_ASSIGNMENTS) },
+                  onLibBookClick = { navigateTo(AppScreen.LIBBOOK_HOME) },
               )
           AppScreen.ADVANCED ->
               AdvancedFeaturesScreen(
@@ -865,6 +899,23 @@ fun MainAppScreen(
                     }
                   },
               )
+          AppScreen.LIBBOOK_HOME ->
+              LibBookHomeScreen(
+                  onReserveClick = { navigateTo(AppScreen.LIBBOOK_RESERVE) },
+                  onBookingsClick = {
+                    libBookViewModel?.ensureBookingsLoaded()
+                    navigateTo(AppScreen.LIBBOOK_BOOKINGS)
+                  },
+              )
+          AppScreen.LIBBOOK_RESERVE ->
+              libBookViewModel?.let {
+                LibBookReserveScreen(
+                    viewModel = it,
+                    onSubmitSuccess = { navigateTo(AppScreen.LIBBOOK_BOOKINGS) },
+                )
+              }
+          AppScreen.LIBBOOK_BOOKINGS ->
+              libBookViewModel?.let { LibBookBookingsScreen(viewModel = it) }
         }
       }
 
@@ -896,6 +947,9 @@ fun MainAppScreen(
                   AppScreen.SPOC_ASSIGNMENT_DETAIL,
                   AppScreen.JUDGE_ASSIGNMENTS,
                   AppScreen.JUDGE_ASSIGNMENT_DETAIL,
+                  AppScreen.LIBBOOK_HOME,
+                  AppScreen.LIBBOOK_RESERVE,
+                  AppScreen.LIBBOOK_BOOKINGS,
               )
       ) {
         BottomNavigation(

@@ -24,6 +24,8 @@ import cn.edu.ubaa.health.RedisReadinessProbe
 import cn.edu.ubaa.health.healthRouting
 import cn.edu.ubaa.judge.GlobalJudgeService
 import cn.edu.ubaa.judge.judgeRouting
+import cn.edu.ubaa.libbook.GlobalLibBookService
+import cn.edu.ubaa.libbook.libBookRouting
 import cn.edu.ubaa.metrics.AppObservability
 import cn.edu.ubaa.metrics.GaugeBindings
 import cn.edu.ubaa.metrics.LoginMetricsRecorder
@@ -87,9 +89,6 @@ fun main() {
               port = serverPort
               host = serverHost
             }
-            connectionGroupSize = 2
-            workerGroupSize = 8
-            callGroupSize = 16
           },
       )
       .start(wait = true)
@@ -168,6 +167,7 @@ internal fun Application.module(
   val cgyyService = GlobalCgyyService.instance
   val spocService = GlobalSpocService.instance
   val judgeService = GlobalJudgeService.instance
+  val libBookService = GlobalLibBookService.instance
   val ygdkService = GlobalYgdkService.instance
   registerPerformanceGauges(
       metricsRegistry,
@@ -176,6 +176,7 @@ internal fun Application.module(
       cgyyService,
       spocService,
       judgeService,
+      libBookService,
       ygdkService,
       readinessProbe,
   )
@@ -197,6 +198,7 @@ internal fun Application.module(
       val expiredCgyyClients = cgyyService.cleanupExpiredClients()
       val expiredSpocClients = spocService.cleanupExpiredClients()
       val expiredJudgeClients = judgeService.cleanupExpiredClients()
+      val expiredLibBookClients = libBookService.cleanupExpiredClients()
       val expiredYgdkClients = ygdkService.cleanupExpiredClients()
       AppObservability.recordCleanupRemovals("session", expiredSessions)
       AppObservability.recordCleanupRemovals("prelogin", expiredPreLogin)
@@ -205,6 +207,7 @@ internal fun Application.module(
       AppObservability.recordCleanupRemovals("cgyy_client", expiredCgyyClients)
       AppObservability.recordCleanupRemovals("spoc_client", expiredSpocClients)
       AppObservability.recordCleanupRemovals("judge_client", expiredJudgeClients)
+      AppObservability.recordCleanupRemovals("libbook_client", expiredLibBookClients)
       AppObservability.recordCleanupRemovals("ygdk_client", expiredYgdkClients)
       if (
           expiredSessions +
@@ -214,10 +217,11 @@ internal fun Application.module(
               expiredCgyyClients +
               expiredSpocClients +
               expiredJudgeClients +
+              expiredLibBookClients +
               expiredYgdkClients > 0
       ) {
         log.info(
-            "Cleanup removed sessions={}, prelogin={}, signinClients={}, bykcClients={}, cgyyClients={}, spocClients={}, judgeClients={}, ygdkClients={}",
+            "Cleanup removed sessions={}, prelogin={}, signinClients={}, bykcClients={}, cgyyClients={}, spocClients={}, judgeClients={}, libBookClients={}, ygdkClients={}",
             expiredSessions,
             expiredPreLogin,
             expiredSigninClients,
@@ -225,6 +229,7 @@ internal fun Application.module(
             expiredCgyyClients,
             expiredSpocClients,
             expiredJudgeClients,
+            expiredLibBookClients,
             expiredYgdkClients,
         )
       }
@@ -238,6 +243,7 @@ internal fun Application.module(
     cgyyService.clearCache()
     spocService.clearCache()
     judgeService.clearCache()
+    libBookService.clearCache()
     ygdkService.clearCache()
     GlobalAcademicPortalWarmupCoordinator.close()
     GlobalSessionManager.close()
@@ -270,6 +276,7 @@ internal fun Application.module(
       evaluationRouting()
       spocRouting()
       judgeRouting()
+      libBookRouting()
       ygdkRouting()
     }
 
@@ -285,6 +292,7 @@ internal fun registerPerformanceGauges(
     cgyyService: cn.edu.ubaa.cgyy.CgyyService,
     spocService: cn.edu.ubaa.spoc.SpocService,
     judgeService: cn.edu.ubaa.judge.JudgeService,
+    libBookService: cn.edu.ubaa.libbook.LibBookService,
     ygdkService: cn.edu.ubaa.ygdk.YgdkService,
     readinessProbe: RedisReadinessProbe,
 ) {
@@ -299,6 +307,9 @@ internal fun registerPerformanceGauges(
   GaugeBindings.bind(metricsRegistry, "ubaa.cgyy.cache") { cgyyService.cacheSize().toDouble() }
   GaugeBindings.bind(metricsRegistry, "ubaa.spoc.cache") { spocService.cacheSize().toDouble() }
   GaugeBindings.bind(metricsRegistry, "ubaa.judge.cache") { judgeService.cacheSize().toDouble() }
+  GaugeBindings.bind(metricsRegistry, "ubaa.libbook.cache") {
+    libBookService.cacheSize().toDouble()
+  }
   GaugeBindings.bind(metricsRegistry, "ubaa.ygdk.cache") { ygdkService.cacheSize().toDouble() }
   GaugeBindings.bind(metricsRegistry, "ubaa.ygdk.context.cache") {
     ygdkService.contextCacheSize().toDouble()

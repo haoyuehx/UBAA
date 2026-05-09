@@ -77,6 +77,20 @@ object CasParser {
     return regex.find(html)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
   }
 
+  fun isIgnorablePasswordExpiryPage(html: String): Boolean {
+    if (html.isBlank() || extractExecution(html).isBlank()) return false
+    return html.contains("continueForm", ignoreCase = true) ||
+        html.contains("ignoreAndContinue", ignoreCase = true) ||
+        html.contains("账号存在安全风险") ||
+        html.contains("密码过期")
+  }
+
+  fun buildIgnorePasswordExpiryParameters(execution: String): Parameters =
+      Parameters.build {
+        append("execution", execution)
+        append("_eventId", "ignoreAndContinue")
+      }
+
   /** 根据登录页面的实际表单结构构建提交参数。 会自动包含所有 hidden 字段和默认字段。 */
   fun buildCasLoginParameters(html: String, request: LoginRequest): Parameters {
     val doc = Jsoup.parse(html)

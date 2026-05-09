@@ -13,6 +13,8 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
+import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteReadChannel
 import kotlin.test.Test
@@ -34,6 +36,102 @@ class AuthServiceLoginMetricsTest {
     val response = authService.login(LoginRequest(username = "2333", password = "secret"))
 
     assertEquals("2333", response.user.schoolid)
+    assertEquals(
+        listOf(LoginRecord("2333", LoginSuccessMode.MANUAL, LoginConnectionMode.SERVER_RELAY)),
+        sink.records,
+    )
+  }
+
+  @Test
+  fun manualLoginIgnoresPasswordExpiryWarningAndRecordsManualMetric() = runBlocking {
+    val sink = RecordingLoginMetricsSink()
+    var loginPostCount = 0
+    var ignoreBody = ""
+    val authService =
+        createAuthService(
+            {
+              HttpClient(MockEngine) {
+                engine {
+                  addHandler { request ->
+                    when {
+                      request.method == HttpMethod.Get &&
+                          request.url.toString() == "https://sso.buaa.edu.cn/login" ->
+                          respond(
+                              content = loginPageHtml(),
+                              status = HttpStatusCode.OK,
+                              headers = htmlHeaders(),
+                          )
+                      request.method == HttpMethod.Post &&
+                          request.url.toString() == "https://sso.buaa.edu.cn/login" -> {
+                        loginPostCount += 1
+                        if (loginPostCount == 1) {
+                          respond(
+                              content = passwordExpiryWarningHtml(),
+                              status = HttpStatusCode.OK,
+                              headers = htmlHeaders(),
+                          )
+                        } else {
+                          ignoreBody = request.bodyText()
+                          respond(
+                              content = "",
+                              status = HttpStatusCode.Found,
+                              headers =
+                                  headersOf(
+                                      HttpHeaders.Location,
+                                      "https://uc.buaa.edu.cn/landing",
+                                  ),
+                          )
+                        }
+                      }
+                      request.method == HttpMethod.Get &&
+                          request.url.toString() == "https://uc.buaa.edu.cn/landing" ->
+                          respond(content = "", status = HttpStatusCode.OK, headers = htmlHeaders())
+                      request.method == HttpMethod.Get &&
+                          request.url.toString().startsWith("https://uc.buaa.edu.cn/api/login") ->
+                          respond(content = "", status = HttpStatusCode.OK, headers = jsonHeaders())
+                      request.method == HttpMethod.Get &&
+                          request.url.toString() == "https://uc.buaa.edu.cn/api/uc/status" ->
+                          respond(
+                              content = """{"code":0,"data":{"name":"Alice","schoolid":"2333"}}""",
+                              status = HttpStatusCode.OK,
+                              headers = jsonHeaders(),
+                          )
+                      request.method == HttpMethod.Get &&
+                          request.url
+                              .toString()
+                              .endsWith("/jwapp/sys/homeapp/api/home/currentUser.do") ->
+                          respond(
+                              content = """{"code":"0","data":{"name":"Alice"}}""",
+                              status = HttpStatusCode.OK,
+                              headers = jsonHeaders(),
+                          )
+                      request.method == HttpMethod.Get &&
+                          request.url
+                              .toString()
+                              .endsWith("/gsapp/sys/yjsemaphome/modules/pubWork/getUserInfo.do") ->
+                          respond(
+                              content = """{"code":"1","data":{}}""",
+                              status = HttpStatusCode.OK,
+                              headers = jsonHeaders(),
+                          )
+                      else -> error("Unexpected request ${request.method.value} ${request.url}")
+                    }
+                  }
+                }
+              }
+            },
+            sink,
+        )
+
+    val response = authService.login(LoginRequest(username = "2333", password = "secret"))
+
+    assertEquals("2333", response.user.schoolid)
+    assertEquals(2, loginPostCount)
+    assertTrue(ignoreBody.contains("execution=e2s2"), "Unexpected ignore body: $ignoreBody")
+    assertTrue(
+        ignoreBody.contains("_eventId=ignoreAndContinue"),
+        "Unexpected ignore body: $ignoreBody",
+    )
     assertEquals(
         listOf(LoginRecord("2333", LoginSuccessMode.MANUAL, LoginConnectionMode.SERVER_RELAY)),
         sink.records,
@@ -360,10 +458,32 @@ class AuthServiceLoginMetricsTest {
         .trimIndent()
   }
 
+  private fun passwordExpiryWarningHtml(): String {
+    return """
+    <html>
+      <body>
+        <form id="continueForm" action="/login" method="post">
+          <div>账号存在安全风险，请修改密码</div>
+          <input type="hidden" name="execution" value="e2s2" />
+          <button type="submit" name="_eventId" value="ignoreAndContinue">忽略提示</button>
+        </form>
+      </body>
+    </html>
+    """
+        .trimIndent()
+  }
+
   private fun htmlHeaders() = headersOf(HttpHeaders.ContentType, ContentType.Text.Html.toString())
 
   private fun jsonHeaders() =
       headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+
+  private fun io.ktor.client.request.HttpRequestData.bodyText(): String =
+      when (val content = body) {
+        is TextContent -> content.text
+        is OutgoingContent.ByteArrayContent -> content.bytes().decodeToString()
+        else -> error("Unsupported request body: ${content::class.simpleName}")
+      }
 }
 
 private data class LoginRecord(

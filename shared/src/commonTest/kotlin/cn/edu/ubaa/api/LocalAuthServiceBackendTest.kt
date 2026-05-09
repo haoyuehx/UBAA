@@ -18,6 +18,8 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
+import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteReadChannel
 import kotlin.test.AfterTest
@@ -264,6 +266,98 @@ class LocalAuthServiceBackendTest {
   }
 
   @Test
+  fun `login ignores sso password expiry warning and records direct login stats`() = runTest {
+    var loginPostCount = 0
+    var ignoreBody = ""
+    val engine = MockEngine { request ->
+      when (request.url.toString()) {
+        "https://sso.buaa.edu.cn/login" ->
+            when (request.method.value) {
+              "GET" ->
+                  respond(
+                      content =
+                          ByteReadChannel(
+                              """
+                              <html>
+                                <body>
+                                  <form id="fm1">
+                                    <input type="hidden" name="execution" value="e1s1" />
+                                  </form>
+                                </body>
+                              </html>
+                              """
+                                  .trimIndent()
+                          ),
+                      status = HttpStatusCode.OK,
+                      headers = headersOf(HttpHeaders.ContentType, "text/html"),
+                  )
+              "POST" -> {
+                loginPostCount += 1
+                if (loginPostCount == 1) {
+                  respond(
+                      content = ByteReadChannel(passwordExpiryWarningHtml()),
+                      status = HttpStatusCode.OK,
+                      headers = headersOf(HttpHeaders.ContentType, "text/html"),
+                  )
+                } else {
+                  ignoreBody = request.bodyText()
+                  respond(
+                      content = ByteReadChannel.Empty,
+                      status = HttpStatusCode.Found,
+                      headers = headersOf(HttpHeaders.Location, "https://uc.buaa.edu.cn/landing"),
+                  )
+                }
+              }
+              else -> error("Unexpected method: ${request.method}")
+            }
+        "https://uc.buaa.edu.cn/landing" ->
+            respond(
+                content = ByteReadChannel.Empty,
+                status = HttpStatusCode.OK,
+            )
+        "https://uc.buaa.edu.cn/api/login?target=https%3A%2F%2Fuc.buaa.edu.cn%2F%23%2Fuser%2Flogin" ->
+            respond(
+                content = ByteReadChannel.Empty,
+                status = HttpStatusCode.OK,
+            )
+        "https://uc.buaa.edu.cn/api/uc/status" ->
+            respond(
+                content =
+                    ByteReadChannel(
+                        """{"code":0,"data":{"name":"Direct User","schoolid":"22375555","username":"22375555"}}"""
+                    ),
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        else -> error("Unexpected url: ${request.url}")
+      }
+    }
+    useMockUpstream(engine)
+
+    val result =
+        LocalAuthServiceBackend().login("22375555", "secret", captcha = null, execution = null)
+
+    assertTrue(result.isSuccess)
+    assertEquals(2, loginPostCount)
+    assertTrue(ignoreBody.contains("execution=e2s2"), "Unexpected ignore body: $ignoreBody")
+    assertTrue(
+        ignoreBody.contains("_eventId=ignoreAndContinue"),
+        "Unexpected ignore body: $ignoreBody",
+    )
+    assertEquals("22375555", result.getOrNull()?.user?.schoolid)
+    assertEquals(
+        listOf(
+            LoginStatsReportRequest(
+                username = "22375555",
+                successMode = LoginStatsSuccessMode.MANUAL,
+                connectionMode = LoginStatsConnectionMode.DIRECT,
+            )
+        ),
+        reportedLogins,
+    )
+  }
+
+  @Test
   fun `login returns captcha requirement when direct mode upstream asks for captcha`() = runTest {
     val loginHtml =
         """
@@ -347,4 +441,25 @@ class LocalAuthServiceBackendTest {
       }
     }
   }
+
+  private fun passwordExpiryWarningHtml(): String =
+      """
+      <html>
+        <body>
+          <form id="continueForm" action="/login" method="post">
+            <div>账号存在安全风险，请修改密码</div>
+            <input type="hidden" name="execution" value="e2s2" />
+            <button type="submit" name="_eventId" value="ignoreAndContinue">忽略提示</button>
+          </form>
+        </body>
+      </html>
+      """
+          .trimIndent()
+
+  private fun io.ktor.client.request.HttpRequestData.bodyText(): String =
+      when (val content = body) {
+        is TextContent -> content.text
+        is OutgoingContent.ByteArrayContent -> content.bytes().decodeToString()
+        else -> error("Unsupported request body: ${content::class.simpleName}")
+      }
 }

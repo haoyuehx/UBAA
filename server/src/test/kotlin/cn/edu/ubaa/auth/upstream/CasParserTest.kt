@@ -3,6 +3,7 @@ package cn.edu.ubaa.auth
 import cn.edu.ubaa.model.dto.LoginRequest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class CasParserTest {
 
@@ -55,5 +56,29 @@ class CasParserTest {
 
     assertEquals("e1s1", parameters["execution"])
     assertEquals("abcd", parameters["captchaResponse"])
+  }
+
+  @Test
+  fun passwordExpiryWarningPageBuildsIgnoreParameters() {
+    val html =
+        """
+        <html>
+          <body>
+            <form id="continueForm" action="/login" method="post">
+              <div>账号存在安全风险，请修改密码</div>
+              <input type="hidden" name="execution" value="e2s2" />
+              <button type="submit" name="_eventId" value="ignoreAndContinue">忽略提示</button>
+            </form>
+          </body>
+        </html>
+        """
+            .trimIndent()
+
+    assertTrue(CasParser.isIgnorablePasswordExpiryPage(html))
+
+    val parameters = CasParser.buildIgnorePasswordExpiryParameters(CasParser.extractExecution(html))
+
+    assertEquals("e2s2", parameters["execution"])
+    assertEquals("ignoreAndContinue", parameters["_eventId"])
   }
 }

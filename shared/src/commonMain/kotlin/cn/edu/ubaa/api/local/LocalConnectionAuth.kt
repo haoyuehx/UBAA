@@ -24,6 +24,7 @@ import cn.edu.ubaa.model.dto.UserInfoResponse
 import com.russhwolf.settings.Settings
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.cookies.CookiesStorage
@@ -228,14 +229,21 @@ internal class PersistentLocalCookieStorage(private val mode: ConnectionMode) : 
 }
 
 internal object LocalUpstreamClientProvider {
+  private fun currentCookieMode(): ConnectionMode =
+      ConnectionRuntime.currentMode()?.takeIf { it != ConnectionMode.SERVER_RELAY }
+          ?: ConnectionMode.DIRECT
+
   internal var clientFactory: (Boolean) -> HttpClient = { followRedirects ->
     buildLocalUpstreamClient(
         followRedirects = followRedirects,
-        cookieStorage =
-            LocalCookieStore.storage(
-                ConnectionRuntime.currentMode()?.takeIf { it != ConnectionMode.SERVER_RELAY }
-                    ?: ConnectionMode.DIRECT
-            ),
+        cookieStorage = LocalCookieStore.storage(currentCookieMode()),
+    )
+  }
+  internal var libBookClientFactory: (Boolean) -> HttpClient = { followRedirects ->
+    buildLocalUpstreamClient(
+        followRedirects = followRedirects,
+        cookieStorage = LocalCookieStore.storage(currentCookieMode()),
+        engine = getLibBookHttpClientEngine(),
     )
   }
   internal var isolatedClientFactory: (Boolean, CookiesStorage) -> HttpClient =
@@ -245,10 +253,19 @@ internal object LocalUpstreamClientProvider {
 
   private val sharedClient =
       ResettableSharedInstance(factory = { clientFactory(true) }, disposer = HttpClient::close)
+  private val libBookSharedClient =
+      ResettableSharedInstance(
+          factory = { libBookClientFactory(true) },
+          disposer = HttpClient::close,
+      )
 
   fun shared(): HttpClient = sharedClient.getOrCreate()
 
+  fun libBookShared(): HttpClient = libBookSharedClient.getOrCreate()
+
   fun newNoRedirectClient(): HttpClient = clientFactory(false)
+
+  fun newLibBookNoRedirectClient(): HttpClient = libBookClientFactory(false)
 
   fun newClient(
       cookieStorage: CookiesStorage,
@@ -257,14 +274,18 @@ internal object LocalUpstreamClientProvider {
 
   fun reset() {
     sharedClient.reset()
+    libBookSharedClient.reset()
     clientFactory = { followRedirects ->
       buildLocalUpstreamClient(
           followRedirects = followRedirects,
-          cookieStorage =
-              LocalCookieStore.storage(
-                  ConnectionRuntime.currentMode()?.takeIf { it != ConnectionMode.SERVER_RELAY }
-                      ?: ConnectionMode.DIRECT
-              ),
+          cookieStorage = LocalCookieStore.storage(currentCookieMode()),
+      )
+    }
+    libBookClientFactory = { followRedirects ->
+      buildLocalUpstreamClient(
+          followRedirects = followRedirects,
+          cookieStorage = LocalCookieStore.storage(currentCookieMode()),
+          engine = getLibBookHttpClientEngine(),
       )
     }
     isolatedClientFactory = { followRedirects, cookieStorage ->
@@ -276,8 +297,9 @@ internal object LocalUpstreamClientProvider {
 private fun buildLocalUpstreamClient(
     followRedirects: Boolean,
     cookieStorage: CookiesStorage,
+    engine: HttpClientEngine = getDefaultEngine(),
 ): HttpClient {
-  return HttpClient(getDefaultEngine()) {
+  return HttpClient(engine) {
     this.followRedirects = followRedirects
     install(ContentNegotiation) {
       json(
@@ -579,26 +601,50 @@ internal class LocalAuthServiceBackend : AuthServiceBackend {
       noRedirectClient: HttpClient,
   ) {
     var currentResponse = initialResponse
-    while (currentResponse.status.value in 300..399) {
-      val location = currentResponse.headers[HttpHeaders.Location] ?: break
-      currentResponse =
-          noRedirectClient.get(resolveRedirectUrl(currentResponse.call.request.url, location))
-    }
+    var passwordExpiryIgnored = false
+    while (true) {
+      while (currentResponse.status.value in 300..399) {
+        val location = currentResponse.headers[HttpHeaders.Location] ?: break
+        currentResponse =
+            noRedirectClient.get(resolveRedirectUrl(currentResponse.call.request.url, location))
+      }
 
-    val bodyText = runCatching { currentResponse.bodyAsText() }.getOrNull().orEmpty()
-    val finalUrl = currentResponse.call.request.url.toString()
-    if ("exception.message=" in finalUrl) {
-      throw ApiCallException(finalUrl.substringAfter("exception.message=").substringBefore("&"))
-    }
-    val loginError =
-        LocalCasParser.findLoginError(bodyText) ?: LocalCasParser.extractTipText(bodyText)
-    if (currentResponse.status == HttpStatusCode.Unauthorized || !loginError.isNullOrBlank()) {
-      throw ApiCallException(loginError ?: "账号或密码错误，请重试")
-    }
-    if (bodyText.contains("input name=\"execution\"")) {
-      throw ApiCallException("账号或密码错误，请重试")
+      val bodyText = runCatching { currentResponse.bodyAsText() }.getOrNull().orEmpty()
+      if (LocalCasParser.isIgnorablePasswordExpiryPage(bodyText)) {
+        if (passwordExpiryIgnored) {
+          throw ApiCallException("登录失败，请稍后重试")
+        }
+        val execution = LocalCasParser.extractExecution(bodyText)
+        if (execution.isBlank()) {
+          throw ApiCallException("登录失败，请稍后重试")
+        }
+        passwordExpiryIgnored = true
+        currentResponse =
+            noRedirectClient.post(stripQuery(currentResponse.call.request.url.toString())) {
+              setBody(
+                  FormDataContent(LocalCasParser.buildIgnorePasswordExpiryParameters(execution))
+              )
+            }
+        continue
+      }
+
+      val finalUrl = currentResponse.call.request.url.toString()
+      if ("exception.message=" in finalUrl) {
+        throw ApiCallException(finalUrl.substringAfter("exception.message=").substringBefore("&"))
+      }
+      val loginError =
+          LocalCasParser.findLoginError(bodyText) ?: LocalCasParser.extractTipText(bodyText)
+      if (currentResponse.status == HttpStatusCode.Unauthorized || !loginError.isNullOrBlank()) {
+        throw ApiCallException(loginError ?: "账号或密码错误，请重试")
+      }
+      if (bodyText.contains("input name=\"execution\"")) {
+        throw ApiCallException("账号或密码错误，请重试")
+      }
+      return
     }
   }
+
+  private fun stripQuery(url: String): String = url.substringBefore("?")
 
   private fun resolveRedirectUrl(currentUrl: Url, location: String): String {
     if (location.startsWith("http://") || location.startsWith("https://")) {
@@ -768,6 +814,20 @@ internal object LocalCasParser {
         .mapNotNull { it.find(html)?.groupValues?.getOrNull(1)?.stripHtml()?.trim() }
         .firstOrNull { it.isNotBlank() }
   }
+
+  fun isIgnorablePasswordExpiryPage(html: String): Boolean {
+    if (html.isBlank() || extractExecution(html).isBlank()) return false
+    return html.contains("continueForm", ignoreCase = true) ||
+        html.contains("ignoreAndContinue", ignoreCase = true) ||
+        html.contains("账号存在安全风险") ||
+        html.contains("密码过期")
+  }
+
+  fun buildIgnorePasswordExpiryParameters(execution: String): Parameters =
+      Parameters.build {
+        append("execution", execution)
+        append("_eventId", "ignoreAndContinue")
+      }
 
   fun buildCasLoginParameters(html: String, request: LoginRequest): Parameters {
     val inputs = inputRegex.findAll(html).map { parseAttributes(it.groupValues[1]) }.toList()

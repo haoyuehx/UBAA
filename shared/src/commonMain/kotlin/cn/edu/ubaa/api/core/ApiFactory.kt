@@ -12,12 +12,14 @@ import cn.edu.ubaa.api.feature.ClassroomApiBackend
 import cn.edu.ubaa.api.feature.EvaluationServiceBackend
 import cn.edu.ubaa.api.feature.GradeApiBackend
 import cn.edu.ubaa.api.feature.JudgeApiBackend
+import cn.edu.ubaa.api.feature.LibBookApiBackend
 import cn.edu.ubaa.api.feature.RelayBykcApiBackend
 import cn.edu.ubaa.api.feature.RelayCgyyApiBackend
 import cn.edu.ubaa.api.feature.RelayClassroomApiBackend
 import cn.edu.ubaa.api.feature.RelayEvaluationServiceBackend
 import cn.edu.ubaa.api.feature.RelayGradeApiBackend
 import cn.edu.ubaa.api.feature.RelayJudgeApiBackend
+import cn.edu.ubaa.api.feature.RelayLibBookApiBackend
 import cn.edu.ubaa.api.feature.RelayScheduleApiBackend
 import cn.edu.ubaa.api.feature.RelaySigninApiBackend
 import cn.edu.ubaa.api.feature.RelaySpocApiBackend
@@ -33,6 +35,7 @@ import cn.edu.ubaa.api.local.LocalClassroomApiBackend
 import cn.edu.ubaa.api.local.LocalEvaluationServiceBackend
 import cn.edu.ubaa.api.local.LocalGradeApiBackend
 import cn.edu.ubaa.api.local.LocalJudgeApiBackend
+import cn.edu.ubaa.api.local.LocalLibBookApiBackend
 import cn.edu.ubaa.api.local.LocalScheduleApiBackend
 import cn.edu.ubaa.api.local.LocalSigninApiBackend
 import cn.edu.ubaa.api.local.LocalSpocApiBackend
@@ -63,95 +66,147 @@ interface ApiFactory {
   fun evaluationService(): EvaluationServiceBackend
 
   fun gradeApi(): GradeApiBackend
+
+  fun libBookApi(): LibBookApiBackend
 }
 
 internal object DefaultApiFactory : ApiFactory {
+  private val directBackends = LocalBackendSet()
+  private val webVpnBackends = LocalBackendSet()
+
   private fun mode(): ConnectionMode =
       ConnectionRuntime.currentMode() ?: ConnectionMode.SERVER_RELAY
 
+  fun clearCachedBackends() {
+    directBackends.clearCache()
+    webVpnBackends.clearCache()
+  }
+
   override fun authService(): AuthServiceBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalAuthServiceBackend()
-        ConnectionMode.WEBVPN -> LocalAuthServiceBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).authService
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).authService
         ConnectionMode.SERVER_RELAY -> RelayAuthServiceBackend()
       }
 
   override fun userService(): UserServiceBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalUserServiceBackend()
-        ConnectionMode.WEBVPN -> LocalUserServiceBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).userService
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).userService
         ConnectionMode.SERVER_RELAY -> RelayUserServiceBackend()
       }
 
   override fun scheduleApi(): ScheduleApiBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalScheduleApiBackend()
-        ConnectionMode.WEBVPN -> LocalScheduleApiBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).scheduleApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).scheduleApi
         ConnectionMode.SERVER_RELAY -> RelayScheduleApiBackend()
       }
 
   override fun signinApi(): SigninApiBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalSigninApiBackend()
-        ConnectionMode.WEBVPN -> LocalSigninApiBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).signinApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).signinApi
         ConnectionMode.SERVER_RELAY -> RelaySigninApiBackend()
       }
 
   override fun spocApi(): SpocApiBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalSpocApiBackend()
-        ConnectionMode.WEBVPN -> LocalSpocApiBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).spocApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).spocApi
         ConnectionMode.SERVER_RELAY -> RelaySpocApiBackend()
       }
 
   override fun judgeApi(): JudgeApiBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalJudgeApiBackend()
-        ConnectionMode.WEBVPN -> LocalJudgeApiBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).judgeApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).judgeApi
         ConnectionMode.SERVER_RELAY -> RelayJudgeApiBackend()
       }
 
   override fun bykcApi(): BykcApiBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalBykcApiBackend()
-        ConnectionMode.WEBVPN -> LocalBykcApiBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).bykcApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).bykcApi
         ConnectionMode.SERVER_RELAY -> RelayBykcApiBackend()
       }
 
   override fun cgyyApi(): CgyyApiBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalCgyyApiBackend()
-        ConnectionMode.WEBVPN -> LocalCgyyApiBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).cgyyApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).cgyyApi
         ConnectionMode.SERVER_RELAY -> RelayCgyyApiBackend()
       }
 
   override fun ygdkApi(): YgdkApiBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalYgdkApiBackend()
-        ConnectionMode.WEBVPN -> LocalYgdkApiBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).ygdkApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).ygdkApi
         ConnectionMode.SERVER_RELAY -> RelayYgdkApiBackend()
       }
 
   override fun classroomApi(): ClassroomApiBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalClassroomApiBackend()
-        ConnectionMode.WEBVPN -> LocalClassroomApiBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).classroomApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).classroomApi
         ConnectionMode.SERVER_RELAY -> RelayClassroomApiBackend()
       }
 
   override fun evaluationService(): EvaluationServiceBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalEvaluationServiceBackend()
-        ConnectionMode.WEBVPN -> LocalEvaluationServiceBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).evaluationService
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).evaluationService
         ConnectionMode.SERVER_RELAY -> RelayEvaluationServiceBackend()
       }
 
   override fun gradeApi(): GradeApiBackend =
       when (mode()) {
-        ConnectionMode.DIRECT -> LocalGradeApiBackend()
-        ConnectionMode.WEBVPN -> LocalGradeApiBackend()
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).gradeApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).gradeApi
         ConnectionMode.SERVER_RELAY -> RelayGradeApiBackend()
       }
+
+  override fun libBookApi(): LibBookApiBackend =
+      when (mode()) {
+        ConnectionMode.DIRECT -> localBackends(ConnectionMode.DIRECT).libBookApi
+        ConnectionMode.WEBVPN -> localBackends(ConnectionMode.WEBVPN).libBookApi
+        ConnectionMode.SERVER_RELAY -> RelayLibBookApiBackend()
+      }
+
+  private fun localBackends(mode: ConnectionMode): LocalBackendSet =
+      when (mode) {
+        ConnectionMode.DIRECT -> directBackends
+        ConnectionMode.WEBVPN -> webVpnBackends
+        ConnectionMode.SERVER_RELAY -> error("Server relay mode does not use local backends")
+      }
+
+  private class LocalBackendSet {
+    val authService = LocalAuthServiceBackend()
+    val userService = LocalUserServiceBackend()
+    val scheduleApi = LocalScheduleApiBackend()
+    val signinApi = LocalSigninApiBackend()
+    val spocApi = LocalSpocApiBackend()
+    val judgeApi = LocalJudgeApiBackend()
+    val bykcApi = LocalBykcApiBackend()
+    val cgyyApi = LocalCgyyApiBackend()
+    val ygdkApi = LocalYgdkApiBackend()
+    val classroomApi = LocalClassroomApiBackend()
+    val evaluationService = LocalEvaluationServiceBackend()
+    val gradeApi = LocalGradeApiBackend()
+    val libBookApi = LocalLibBookApiBackend()
+
+    fun clearCache() {
+      signinApi.clearCache()
+      spocApi.clearCache()
+      judgeApi.clearCache()
+      bykcApi.clearCache()
+      cgyyApi.clearCache()
+      ygdkApi.clearCache()
+      classroomApi.clearCache()
+      evaluationService.clearCache()
+      libBookApi.clearCache()
+    }
+  }
 }
 
 internal object RelayApiFactory : ApiFactory {
@@ -178,4 +233,6 @@ internal object RelayApiFactory : ApiFactory {
   override fun evaluationService(): EvaluationServiceBackend = RelayEvaluationServiceBackend()
 
   override fun gradeApi(): GradeApiBackend = RelayGradeApiBackend()
+
+  override fun libBookApi(): LibBookApiBackend = RelayLibBookApiBackend()
 }

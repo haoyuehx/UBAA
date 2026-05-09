@@ -13,7 +13,7 @@
 
 - 下载发布版：[GitHub Releases](https://github.com/BUAASubnet/UBAA/releases)
 - 在线使用：[网页版](https://app.buaa.team)
-- 开发文档：[GitHub Wiki](https://github.com/BUAASubnet/UBAA/wiki)
+- 开发文档：[项目文档](docs/index.md)
 
 ### Arch Linux (AUR)
 
@@ -30,13 +30,13 @@ yay -S ubaa
 
 ## 开发文档
 
-仓库首页只保留概览信息，详细开发说明统一放在 GitHub Wiki：
+详细文档统一维护在仓库 `docs/` 中，并由 VitePress 构建为静态站点。推送 `dev` 分支后，GitHub Actions 会构建文档并通过 SSH rsync 发布到服务器静态目录。
 
-- 总览入口：[Wiki 首页](https://github.com/BUAASubnet/UBAA/wiki)
-- 起步与配置：[快速开始](https://github.com/BUAASubnet/UBAA/wiki/Quick-Start) / [配置说明](https://github.com/BUAASubnet/UBAA/wiki/Configuration)
-- 架构与模块：[架构总览](https://github.com/BUAASubnet/UBAA/wiki/Architecture-Overview) / [shared](https://github.com/BUAASubnet/UBAA/wiki/Module-Shared) / [composeApp](https://github.com/BUAASubnet/UBAA/wiki/Module-ComposeApp) / [server](https://github.com/BUAASubnet/UBAA/wiki/Module-Server)
-- 接口与质量：[API 契约](https://github.com/BUAASubnet/UBAA/wiki/API-Contracts) / [测试与质量](https://github.com/BUAASubnet/UBAA/wiki/Testing-and-Quality) / [编码规范](https://github.com/BUAASubnet/UBAA/wiki/Coding-Standards)
-- 发布与排障：[发布与部署](https://github.com/BUAASubnet/UBAA/wiki/Release-and-Deployment) / [常见问题](https://github.com/BUAASubnet/UBAA/wiki/Troubleshooting)
+- 总览入口：[项目文档](docs/index.md)
+- 功能说明：[功能总览](docs/features/index.md) / [登录与连接模式](docs/features/auth-and-connection.md) / [希冀作业](docs/features/judge.md)
+- 技术文档：[架构总览](docs/tech/architecture.md) / [共享 API 与契约](docs/tech/shared-api.md) / [服务端路由](docs/tech/server-routes.md)
+- 发布与排障：[发布与部署](docs/tech/release-deployment.md) / [配置说明](docs/tech/configuration.md) / [排障指南](docs/tech/troubleshooting.md)
+- 项目公告与版本：[公告维护](docs/announcements/index.md) / [更新日志](docs/changelog/index.md)
 
 ## 仓库概览
 

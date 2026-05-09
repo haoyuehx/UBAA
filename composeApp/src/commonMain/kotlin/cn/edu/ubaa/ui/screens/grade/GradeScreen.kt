@@ -153,13 +153,19 @@ private fun GradeSummaryCard(
       ) {
         SummaryValue(
             label = "GPA",
-            value = if (isLoading) "统计中" else statistics.gpa?.let(::formatNumber) ?: "--",
+            value = if (isLoading) "统计中" else statistics.gpa?.let(::formatGradePoint) ?: "--",
             modifier = Modifier.weight(1f),
         )
         SummaryValue(
             label = "加权平均分",
             value =
                 if (isLoading) "统计中" else statistics.weightedAverage?.let(::formatNumber) ?: "--",
+            modifier = Modifier.weight(1f),
+        )
+        SummaryValue(
+            label = "算数平均分",
+            value =
+                if (isLoading) "统计中" else statistics.arithmeticAverage?.let(::formatNumber) ?: "--",
             modifier = Modifier.weight(1f),
         )
       }
@@ -287,11 +293,19 @@ private fun formatNumber(value: Double): String {
   return if (rounded % 1.0 == 0.0) rounded.toInt().toString() else rounded.toString()
 }
 
+internal fun formatGradePoint(value: Double): String {
+  val rounded = kotlin.math.round(value * 100.0).toLong()
+  val integerPart = rounded / 100
+  val decimalPart = kotlin.math.abs(rounded % 100)
+  return "$integerPart.${decimalPart.toString().padStart(2, '0')}"
+}
+
 internal data class GradeStatistics(
     val courseCount: Int,
     val totalCredits: Double,
     val gpa: Double?,
     val weightedAverage: Double?,
+    val arithmeticAverage: Double?,
 )
 
 internal fun calculateGradeStatistics(grades: List<Grade>): GradeStatistics {
@@ -299,6 +313,8 @@ internal fun calculateGradeStatistics(grades: List<Grade>): GradeStatistics {
   var gpaCreditTotal = 0.0
   var scoreWeightedTotal = 0.0
   var scoreCreditTotal = 0.0
+  var arithmeticScoreTotal = 0.0
+  var arithmeticScoreCount = 0
 
   grades.forEach { grade ->
     val credit = grade.credit?.takeIf { it > 0.0 } ?: return@forEach
@@ -310,6 +326,8 @@ internal fun calculateGradeStatistics(grades: List<Grade>): GradeStatistics {
     gpaCreditTotal += credit
     scoreWeightedTotal += numericScore * credit
     scoreCreditTotal += credit
+    arithmeticScoreTotal += numericScore
+    arithmeticScoreCount += 1
   }
 
   return GradeStatistics(
@@ -317,11 +335,15 @@ internal fun calculateGradeStatistics(grades: List<Grade>): GradeStatistics {
       totalCredits = grades.mapNotNull { it.credit?.takeIf { credit -> credit > 0.0 } }.sum(),
       gpa = weightedValue(gpaWeightedTotal, gpaCreditTotal),
       weightedAverage = weightedValue(scoreWeightedTotal, scoreCreditTotal),
+      arithmeticAverage = averageValue(arithmeticScoreTotal, arithmeticScoreCount),
   )
 }
 
 private fun weightedValue(total: Double, credits: Double): Double? =
     if (credits > 0.0) kotlin.math.round((total / credits) * 100.0) / 100.0 else null
+
+private fun averageValue(total: Double, count: Int): Double? =
+    if (count > 0) kotlin.math.round((total / count) * 100.0) / 100.0 else null
 
 private fun String.toGradePoint(): Double? {
   val normalizedScore = normalizedLevelScore()
@@ -343,9 +365,9 @@ private fun String.toGradePoint(): Double? {
 
 private fun String.toWeightedAverageScore(): Double? {
   return when (normalizedLevelScore()) {
-    "优" -> 95.0
-    "良" -> 85.0
-    "中" -> 75.0
+    "优" -> 90.0
+    "良" -> 80.0
+    "中" -> 70.0
     "及格" -> 60.0
     "不及格" -> 0.0
     "通过",
