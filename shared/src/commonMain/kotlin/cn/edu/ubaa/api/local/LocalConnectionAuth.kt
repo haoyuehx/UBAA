@@ -601,26 +601,50 @@ internal class LocalAuthServiceBackend : AuthServiceBackend {
       noRedirectClient: HttpClient,
   ) {
     var currentResponse = initialResponse
-    while (currentResponse.status.value in 300..399) {
-      val location = currentResponse.headers[HttpHeaders.Location] ?: break
-      currentResponse =
-          noRedirectClient.get(resolveRedirectUrl(currentResponse.call.request.url, location))
-    }
+    var passwordExpiryIgnored = false
+    while (true) {
+      while (currentResponse.status.value in 300..399) {
+        val location = currentResponse.headers[HttpHeaders.Location] ?: break
+        currentResponse =
+            noRedirectClient.get(resolveRedirectUrl(currentResponse.call.request.url, location))
+      }
 
-    val bodyText = runCatching { currentResponse.bodyAsText() }.getOrNull().orEmpty()
-    val finalUrl = currentResponse.call.request.url.toString()
-    if ("exception.message=" in finalUrl) {
-      throw ApiCallException(finalUrl.substringAfter("exception.message=").substringBefore("&"))
-    }
-    val loginError =
-        LocalCasParser.findLoginError(bodyText) ?: LocalCasParser.extractTipText(bodyText)
-    if (currentResponse.status == HttpStatusCode.Unauthorized || !loginError.isNullOrBlank()) {
-      throw ApiCallException(loginError ?: "账号或密码错误，请重试")
-    }
-    if (bodyText.contains("input name=\"execution\"")) {
-      throw ApiCallException("账号或密码错误，请重试")
+      val bodyText = runCatching { currentResponse.bodyAsText() }.getOrNull().orEmpty()
+      if (LocalCasParser.isIgnorablePasswordExpiryPage(bodyText)) {
+        if (passwordExpiryIgnored) {
+          throw ApiCallException("登录失败，请稍后重试")
+        }
+        val execution = LocalCasParser.extractExecution(bodyText)
+        if (execution.isBlank()) {
+          throw ApiCallException("登录失败，请稍后重试")
+        }
+        passwordExpiryIgnored = true
+        currentResponse =
+            noRedirectClient.post(stripQuery(currentResponse.call.request.url.toString())) {
+              setBody(
+                  FormDataContent(LocalCasParser.buildIgnorePasswordExpiryParameters(execution))
+              )
+            }
+        continue
+      }
+
+      val finalUrl = currentResponse.call.request.url.toString()
+      if ("exception.message=" in finalUrl) {
+        throw ApiCallException(finalUrl.substringAfter("exception.message=").substringBefore("&"))
+      }
+      val loginError =
+          LocalCasParser.findLoginError(bodyText) ?: LocalCasParser.extractTipText(bodyText)
+      if (currentResponse.status == HttpStatusCode.Unauthorized || !loginError.isNullOrBlank()) {
+        throw ApiCallException(loginError ?: "账号或密码错误，请重试")
+      }
+      if (bodyText.contains("input name=\"execution\"")) {
+        throw ApiCallException("账号或密码错误，请重试")
+      }
+      return
     }
   }
+
+  private fun stripQuery(url: String): String = url.substringBefore("?")
 
   private fun resolveRedirectUrl(currentUrl: Url, location: String): String {
     if (location.startsWith("http://") || location.startsWith("https://")) {
@@ -790,6 +814,20 @@ internal object LocalCasParser {
         .mapNotNull { it.find(html)?.groupValues?.getOrNull(1)?.stripHtml()?.trim() }
         .firstOrNull { it.isNotBlank() }
   }
+
+  fun isIgnorablePasswordExpiryPage(html: String): Boolean {
+    if (html.isBlank() || extractExecution(html).isBlank()) return false
+    return html.contains("continueForm", ignoreCase = true) ||
+        html.contains("ignoreAndContinue", ignoreCase = true) ||
+        html.contains("账号存在安全风险") ||
+        html.contains("密码过期")
+  }
+
+  fun buildIgnorePasswordExpiryParameters(execution: String): Parameters =
+      Parameters.build {
+        append("execution", execution)
+        append("_eventId", "ignoreAndContinue")
+      }
 
   fun buildCasLoginParameters(html: String, request: LoginRequest): Parameters {
     val inputs = inputRegex.findAll(html).map { parseAttributes(it.groupValues[1]) }.toList()

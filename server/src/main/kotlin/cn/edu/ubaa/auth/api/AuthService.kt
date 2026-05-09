@@ -676,37 +676,60 @@ class AuthService(
       noRedirectClient: HttpClient,
   ): HttpResponse {
     var currentResponse = initialResponse
+    var passwordExpiryIgnored = false
     log.debug("Following redirects starting from: {}", initialResponse.request.url)
-    while (currentResponse.status.value in 300..399) {
-      val location = currentResponse.headers[HttpHeaders.Location] ?: break
-      val nextUrl =
-          try {
-            val base = java.net.URI.create(currentResponse.request.url.toString())
-            base.resolve(location).toURL().toString()
-          } catch (e: Exception) {
-            location
-          }
-      log.debug("Redirecting to: {}", nextUrl)
-      currentResponse = noRedirectClient.get(nextUrl)
-    }
+    while (true) {
+      while (currentResponse.status.value in 300..399) {
+        val location = currentResponse.headers[HttpHeaders.Location] ?: break
+        val nextUrl =
+            try {
+              val base = java.net.URI.create(currentResponse.request.url.toString())
+              base.resolve(location).toURL().toString()
+            } catch (e: Exception) {
+              location
+            }
+        log.debug("Redirecting to: {}", nextUrl)
+        currentResponse = noRedirectClient.get(nextUrl)
+      }
 
-    val bodyText = runCatching { currentResponse.bodyAsText() }.getOrNull() ?: ""
-    val url = currentResponse.request.url.toString()
+      val bodyText = runCatching { currentResponse.bodyAsText() }.getOrNull() ?: ""
+      if (CasParser.isIgnorablePasswordExpiryPage(bodyText)) {
+        if (passwordExpiryIgnored) {
+          failLogin("password expiry ignore failed")
+        }
+        val execution =
+            CasParser.extractExecution(bodyText).takeIf { it.isNotBlank() }
+                ?: failLogin("password expiry page execution missing")
+        val ignoreUrl = stripQuery(currentResponse.request.url.toString())
+        passwordExpiryIgnored = true
+        currentResponse =
+            AppObservability.observeUpstreamRequest("sso", "ignore_password_expiry") {
+              noRedirectClient.post(ignoreUrl) {
+                setBody(FormDataContent(CasParser.buildIgnorePasswordExpiryParameters(execution)))
+              }
+            }
+        continue
+      }
 
-    if (url.contains("exception.message=")) {
-      failLogin(url.substringAfter("exception.message=").decodeURLQueryComponent())
+      val url = currentResponse.request.url.toString()
+
+      if (url.contains("exception.message=")) {
+        failLogin(url.substringAfter("exception.message=").decodeURLQueryComponent())
+      }
+      if (
+          currentResponse.status == HttpStatusCode.Unauthorized ||
+              CasParser.findLoginError(bodyText) != null
+      ) {
+        failLogin(CasParser.findLoginError(bodyText) ?: CasParser.extractTipText(bodyText))
+      }
+      if (bodyText.contains("input name=\"execution\"")) {
+        failLogin("账号或密码错误")
+      }
+      return currentResponse
     }
-    if (
-        currentResponse.status == HttpStatusCode.Unauthorized ||
-            CasParser.findLoginError(bodyText) != null
-    ) {
-      failLogin(CasParser.findLoginError(bodyText) ?: CasParser.extractTipText(bodyText))
-    }
-    if (bodyText.contains("input name=\"execution\"")) {
-      failLogin("账号或密码错误")
-    }
-    return currentResponse
   }
+
+  private fun stripQuery(url: String): String = url.substringBefore("?")
 }
 
 private class LoginTimeline(
