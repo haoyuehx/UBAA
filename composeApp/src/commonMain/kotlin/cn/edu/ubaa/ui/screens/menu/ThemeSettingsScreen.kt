@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Card
@@ -40,7 +41,15 @@ import androidx.compose.ui.unit.dp
 enum class ThemeMode {
   SYSTEM,
   LIGHT,
-  DARK,
+  DARK;
+
+  val storageKey: String
+    get() = name.lowercase()
+
+  companion object {
+    fun fromStorageKey(value: String?): ThemeMode =
+        entries.firstOrNull { it.storageKey == value?.trim()?.lowercase() } ?: SYSTEM
+  }
 }
 
 private val colorThemeTypes =
@@ -68,7 +77,7 @@ fun ThemeSettingsScreen(
     onToggleOledEnhance: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-  Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
+  Column(modifier = modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
     Text(
         text = "外观设置",
         style = MaterialTheme.typography.titleLarge,
@@ -83,7 +92,7 @@ fun ThemeSettingsScreen(
       Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
         Text(text = "深色模式", style = MaterialTheme.typography.titleMedium)
         Spacer(modifier = Modifier.height(12.dp))
-        ThemeMode.values().forEach { mode ->
+        ThemeMode.entries.forEach { mode ->
           val title =
               when (mode) {
                 ThemeMode.SYSTEM -> "跟随系统"
@@ -146,7 +155,7 @@ fun ThemeSettingsScreen(
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = if (useDynamicColor) "动态配色启用时，颜色方案由系统/主题自动选择。" else "选择你希望的应用整体色调。",
+            text = if (useDynamicColor) "自动配色启用时，应用将使用默认色调并随深浅色模式调整。" else "选择你希望的应用整体色调。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -165,10 +174,10 @@ fun ThemeSettingsScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
           Column {
-            Text(text = "动态配色", style = MaterialTheme.typography.titleMedium)
+            Text(text = "自动配色", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "开启后尝试使用系统动态配色。",
+                text = "开启后使用应用默认色调。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

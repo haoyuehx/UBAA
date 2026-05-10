@@ -960,6 +960,7 @@ fun MainAppScreen(
                   AppScreen.COURSE_DETAIL,
                   AppScreen.MY,
                   AppScreen.SETTINGS,
+                  AppScreen.THEME_SETTINGS,
                   AppScreen.ABOUT,
                   AppScreen.BYKC_HOME,
                   AppScreen.BYKC_COURSES,

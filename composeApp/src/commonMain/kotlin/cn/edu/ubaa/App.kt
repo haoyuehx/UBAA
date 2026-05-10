@@ -26,6 +26,8 @@ import cn.edu.ubaa.api.auth.AppAnnouncement
 import cn.edu.ubaa.api.auth.AppVersionCheckResponse
 import cn.edu.ubaa.api.auth.UpdateService
 import cn.edu.ubaa.api.storage.AnnouncementReadStore
+import cn.edu.ubaa.api.storage.StoredThemePreferences
+import cn.edu.ubaa.api.storage.ThemePreferenceStore
 import cn.edu.ubaa.ui.common.components.ReleaseNotesText
 import cn.edu.ubaa.ui.navigation.MainAppScreen
 import cn.edu.ubaa.ui.screens.auth.AuthViewModel
@@ -53,10 +55,13 @@ fun App() {
   PreloadFonts()
 
   val systemDarkTheme = isSystemInDarkTheme()
-  var themeMode by rememberSaveable { mutableStateOf(ThemeMode.SYSTEM) }
-  var themeColorValue by rememberSaveable { mutableStateOf(0xFF6750A4) }
-  var useDynamicColor by rememberSaveable { mutableStateOf(false) }
-  var oledEnhance by rememberSaveable { mutableStateOf(false) }
+  val storedThemePreferences = remember { ThemePreferenceStore.get() }
+  var themeMode by rememberSaveable {
+    mutableStateOf(ThemeMode.fromStorageKey(storedThemePreferences.themeMode))
+  }
+  var themeColorValue by rememberSaveable { mutableStateOf(storedThemePreferences.seedColorValue) }
+  var useDynamicColor by rememberSaveable { mutableStateOf(storedThemePreferences.useDynamicColor) }
+  var oledEnhance by rememberSaveable { mutableStateOf(storedThemePreferences.oledEnhance) }
   val themeColor = Color(themeColorValue)
   val darkTheme =
       when (themeMode) {
@@ -65,9 +70,21 @@ fun App() {
         ThemeMode.DARK -> true
       }
 
+  LaunchedEffect(themeMode, themeColorValue, useDynamicColor, oledEnhance) {
+    ThemePreferenceStore.save(
+        StoredThemePreferences(
+            themeMode = themeMode.storageKey,
+            seedColorValue = themeColorValue,
+            useDynamicColor = useDynamicColor,
+            oledEnhance = oledEnhance,
+        )
+    )
+  }
+
   UBAATheme(
       darkTheme = darkTheme,
       seedColor = themeColor,
+      dynamicColor = useDynamicColor,
       oledEnhance = oledEnhance,
   ) {
     val authViewModel: AuthViewModel = viewModel { AuthViewModel() }
